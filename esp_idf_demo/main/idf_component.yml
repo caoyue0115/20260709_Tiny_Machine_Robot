@@ -1,0 +1,12 @@
+dependencies:
+  idf: ">=5.5"
+  espressif/esp_vocat:
+    version: "*"
+  espressif/esp_audio_codec:
+    version: "~2.4.1"
+  espressif/esp_websocket_client:
+    version: "*"
+  78/esp-wifi-connect:
+    version: "3.1.4"
+  espressif/esp-sr:
+    version: "2.4.6"
