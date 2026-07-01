@@ -33,3 +33,4 @@ def test_tiny_paths_use_coffee_data_and_do_not_use_old_domain_name(tmp_path: Pat
         assert settings.kb_dir == tmp_path / "data" / "coffee"
         assert settings.indices_dir == tmp_path / "indices"
         assert "coffee" in str(settings.kb_dir)
+        assert "buddhism" not in str(settings.kb_dir)

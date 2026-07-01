@@ -134,7 +134,7 @@ class RealtimeSchemaTests(unittest.TestCase):
     def test_settings_expose_realtime_defaults(self) -> None:
         from src.settings import settings
 
-        self.assertFalse(settings.realtime_enabled)
+        self.assertTrue(settings.realtime_enabled)
         self.assertEqual(settings.realtime_audio_sample_rate, 16000)
         self.assertEqual(settings.realtime_audio_sample_width_bits, 16)
         self.assertEqual(settings.realtime_audio_channels, 1)
