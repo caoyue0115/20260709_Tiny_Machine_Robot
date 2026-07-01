@@ -1,0 +1,34 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: uvicorn src.app:app --host 0.0.0.0 --port 8010
+    env_file:
+      - ${TINY_ENV_FILE:-/app/20260701_Tiny_Machine_Robot/.env}
+    volumes:
+      - ${TINY_DATA_DIR:-/app/20260701_Tiny_Machine_Robot/data}:/app/data
+      - ${TINY_INDICES_DIR:-/app/20260701_Tiny_Machine_Robot/indices}:/app/indices
+    ports:
+      - "80:8010"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: rq worker -u redis://redis:6379/0 tiny_coffee_tasks
+    env_file:
+      - ${TINY_ENV_FILE:-/app/20260701_Tiny_Machine_Robot/.env}
+    volumes:
+      - ${TINY_DATA_DIR:-/app/20260701_Tiny_Machine_Robot/data}:/app/data
+      - ${TINY_INDICES_DIR:-/app/20260701_Tiny_Machine_Robot/indices}:/app/indices
+    depends_on:
+      - redis

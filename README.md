@@ -1,63 +1,35 @@
-# Tiny Coffee Machine / 小机仔
+# Tiny Coffee Machine
 
-Tiny Coffee Machine / 小机仔 is the current bring-up repo for the ESP voice coffee assistant. The active bring-up target is the Guangzhou entry:
+`Tiny Coffee Machine` / `小机仔` is an ESP32-S3 voice Q&A coffee companion.
 
-```text
-https://tiny.praystack.top
-```
-
-This README is intentionally short. Detailed firmware, deployment, and handoff docs will be filled in by later tasks.
-
-## Bring-Up Chain
-
-- Device audio path: realtime Opus uplink from the board to the backend session.
-- ASR target: Volcengine ASR for streaming recognition.
-- Reasoning path: coffee RAG snippets from `data/coffee`, then Qwen 3.5 Flash.
-- Voice output: Qwen realtime TTS, streamed back for low-latency playback.
-- OTA code and configuration hooks are retained in the repo, but OTA is inactive for the current bring-up.
-
-## Coffee RAG
-
-Coffee knowledge lives under:
+Phase 1 runs the realtime Opus voice chain:
 
 ```text
-data/coffee
+小明同学 wake word -> Opus uplink -> Volcengine ASR -> coffee RAG -> Qwen 3.5 Flash -> Qwen realtime TTS -> device playback
 ```
 
-Keep this directory focused on coffee-machine, brewing, bean, and drink-domain material used by the active RAG retriever.
+## Phase 1 Scope
 
-## ASR Hotwords
+- ESP32-S3 16MB Flash + 8MB PSRAM voice board.
+- Guangzhou cloud entry: `tiny.praystack.top`.
+- Realtime Opus endpoint: `/api/v5/realtime/opus-stream`.
+- General coffee knowledge base.
+- OTA code retained but inactive.
 
-The ASR vocabulary helper defaults to the coffee hotword list:
+## Local Cloud
 
-```bash
-python scripts/create_asr_vocabulary.py
+```powershell
+copy .env.example .env
+docker compose up --build
 ```
 
-Default inputs:
+## Coffee Index
 
-```text
-config/asr_hotwords.coffee.json
-prefix: coffeeasr
+```powershell
+$env:PYTHONPATH='.'
+python scripts/ingest_coffee.py
 ```
 
-To update an existing vocabulary table:
+## Firmware
 
-```bash
-python scripts/create_asr_vocabulary.py --vocabulary-id vocab-xxxx
-```
-
-The helper prints a JSON summary and an `ASR_VOCABULARY_ID=...` line suitable for local environment configuration.
-
-## Configuration And Secrets
-
-- Use environment variables or local `.env` files for service credentials.
-- Do not commit real API keys, access tokens, SSH keys, Wi-Fi credentials, or production secrets.
-- Example values in tracked files must stay fake or placeholder-only.
-
-## Useful Checks
-
-```bash
-$env:PYTHONPATH='.'; python -m pytest tests/test_asr_provider.py tests/test_smoke_scripts.py -q
-$env:PYTHONPATH='.'; python -m pytest tests/test_tiny_coffee_rag.py tests/test_opus_uplink.py -q
-```
+See `docs/firmware/windows-com6.md`.
