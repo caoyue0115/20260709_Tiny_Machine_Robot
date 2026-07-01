@@ -23,6 +23,7 @@ from src.storage.realtime_store import InMemoryRealtimeSessionStore
 
 
 ANSWER_MODE_SHORT = "short"
+COFFEE_RETRY_TEXT = "我还没听清，可以再问我一个咖啡问题吗？"
 _SENTENCE_ENDINGS = "。！？!?；;…"
 _SOFT_CUT_HINTS = "，、,：: "
 _ASR_NORMALIZATION_RULES: tuple[tuple[str, str], ...] = (
@@ -30,8 +31,11 @@ _ASR_NORMALIZATION_RULES: tuple[tuple[str, str], ...] = (
     ("拿帖", "拿铁"),
     ("卡布其诺", "卡布奇诺"),
     ("卡布奇洛", "卡布奇诺"),
+    ("意式浓锁", "意式浓缩"),
+    ("手充", "手冲"),
     ("手冲加啡", "手冲咖啡"),
     ("咖非", "咖啡"),
+    ("格夏", "瑰夏"),
 )
 logger = logging.getLogger(__name__)
 
@@ -373,7 +377,7 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
     is_reject = (not references) or top_score < threshold
     store.update_session(session_id, step="llm", trace=updated["trace"])
     if is_reject:
-        answer_text = "我还没听清，可以再问我一个咖啡问题吗？"
+        answer_text = COFFEE_RETRY_TEXT
         updated["trace"]["first_llm_chunk_ms"] = _elapsed_ms(overall_started)
         _set_abs_trace(
             updated["trace"],

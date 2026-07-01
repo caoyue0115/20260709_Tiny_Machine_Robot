@@ -9,6 +9,7 @@ from src.providers.asr import ASRResult, transcribe_wav_result
 from src.providers.llm import generate_answer
 from src.providers.tts import synthesize_audio
 from src.rag.retriever import is_coffee_question, retrieve_references
+from src.services.realtime_session import COFFEE_RETRY_TEXT
 from src.settings import settings
 from src.storage.db import fetch_task, mark_task_done, mark_task_failed, update_task_status
 
@@ -51,7 +52,7 @@ def run_pipeline(task_id: str) -> None:
 
         threshold = settings.min_top_score if is_coffee_question(question_text) else settings.min_top_score_no_keyword
         if not references or top_score < threshold:
-            answer_text = "我还没听清，可以再问我一个咖啡问题吗？"
+            answer_text = COFFEE_RETRY_TEXT
         else:
             update_task_status(task_id, "running", "llm", 0.7)
             llm_started = time.perf_counter()
