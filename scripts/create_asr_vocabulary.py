@@ -11,9 +11,12 @@ if str(ROOT) not in sys.path:
 
 from src.settings import settings
 
+DEFAULT_HOTWORDS_PATH = ROOT / "config" / "asr_hotwords.coffee.json"
+DEFAULT_PREFIX = "coffeeasr"
+
 
 def default_hotwords_path() -> Path:
-    return ROOT / "config" / "asr_hotwords.buddhism.json"
+    return DEFAULT_HOTWORDS_PATH
 
 
 def load_hotwords(path: str | Path) -> list[dict]:
@@ -61,7 +64,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hotwords", default=str(default_hotwords_path()))
     parser.add_argument("--target-model", default=settings.asr_model)
-    parser.add_argument("--prefix", default="buddhaasr")
+    parser.add_argument("--prefix", default=DEFAULT_PREFIX)
     parser.add_argument("--vocabulary-id")
     args = parser.parse_args()
 

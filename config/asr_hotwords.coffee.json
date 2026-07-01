@@ -1,0 +1,15 @@
+[
+  {"text": "咖啡", "weight": 5, "lang": "zh"},
+  {"text": "手冲", "weight": 5, "lang": "zh"},
+  {"text": "拿铁", "weight": 5, "lang": "zh"},
+  {"text": "卡布奇诺", "weight": 5, "lang": "zh"},
+  {"text": "美式", "weight": 5, "lang": "zh"},
+  {"text": "意式浓缩", "weight": 5, "lang": "zh"},
+  {"text": "研磨", "weight": 4, "lang": "zh"},
+  {"text": "萃取", "weight": 4, "lang": "zh"},
+  {"text": "烘焙", "weight": 4, "lang": "zh"},
+  {"text": "粉水比", "weight": 4, "lang": "zh"},
+  {"text": "水洗", "weight": 4, "lang": "zh"},
+  {"text": "日晒", "weight": 4, "lang": "zh"},
+  {"text": "奶泡", "weight": 4, "lang": "zh"}
+]

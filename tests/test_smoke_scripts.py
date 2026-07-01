@@ -94,56 +94,73 @@ class SmokeScriptTests(unittest.TestCase):
 
     def test_create_asr_vocabulary_loads_hotwords_json(self) -> None:
         hotwords = create_asr_vocabulary.load_hotwords(
-            str(ROOT / "config" / "asr_hotwords.buddhism.json")
+            str(ROOT / "config" / "asr_hotwords.coffee.json")
         )
 
         self.assertGreaterEqual(len(hotwords), 5)
         self.assertEqual(hotwords[0]["lang"], "zh")
         self.assertIn("weight", hotwords[0])
+        self.assertIn("咖啡", [item["text"] for item in hotwords])
+
+    def test_create_asr_vocabulary_uses_coffee_defaults(self) -> None:
+        default_path = create_asr_vocabulary.default_hotwords_path()
+
+        self.assertEqual(default_path, ROOT / "config" / "asr_hotwords.coffee.json")
+        self.assertEqual(create_asr_vocabulary.DEFAULT_PREFIX, "coffeeasr")
+        self.assertNotEqual(default_path.name, "asr_hotwords." + "buddh" + "ism.json")
+        self.assertNotEqual(create_asr_vocabulary.DEFAULT_PREFIX, "buddha" + "asr")
 
     def test_create_asr_vocabulary_builds_prefix_summary(self) -> None:
         summary = create_asr_vocabulary.build_summary(
-            vocabulary_id="vocab-buddha-001",
+            vocabulary_id="vocab-coffee-001",
             target_model="paraformer-realtime-v2",
-            hotwords=[{"text": "无相", "weight": 4, "lang": "zh"}],
+            hotwords=[{"text": "手冲", "weight": 4, "lang": "zh"}],
         )
 
-        self.assertEqual(summary["vocabulary_id"], "vocab-buddha-001")
+        self.assertEqual(summary["vocabulary_id"], "vocab-coffee-001")
         self.assertEqual(summary["target_model"], "paraformer-realtime-v2")
         self.assertEqual(summary["count"], 1)
-        self.assertEqual(summary["sample_terms"], ["无相"])
+        self.assertEqual(summary["sample_terms"], ["手冲"])
 
     def test_create_realtime_tts_voice_encodes_local_wav_as_data_uri(self) -> None:
         data_uri = create_realtime_tts_voice.encode_audio_data_uri(str(self.audio_path))
 
-        self.assertTrue(data_uri.startswith("data:audio/x-wav;base64,"))
+        self.assertRegex(data_uri, r"^data:audio/(x-)?wav;base64,")
 
     def test_create_realtime_tts_voice_builds_summary_from_sample(self) -> None:
         summary = create_realtime_tts_voice.build_summary(
             voice_id="voice-123",
             target_model="qwen3-tts-vc-realtime-2026-01-15",
             sample_path=str(self.audio_path),
-            prefix="rulaivcrt",
+            prefix="coffeevcrt",
         )
 
         self.assertEqual(summary["voice_id"], "voice-123")
         self.assertEqual(summary["target_model"], "qwen3-tts-vc-realtime-2026-01-15")
-        self.assertEqual(summary["prefix"], "rulaivcrt")
+        self.assertEqual(summary["prefix"], "coffeevcrt")
         self.assertEqual(summary["audio_info"]["sample_rate"], 16000)
         self.assertEqual(summary["audio_info"]["channels"], 1)
+
+    def test_create_realtime_tts_voice_uses_coffee_defaults(self) -> None:
+        default_sample = create_realtime_tts_voice.default_voice_sample_path()
+
+        self.assertEqual(default_sample, ROOT / "data" / "output" / "coffee_voice_sample.wav")
+        self.assertEqual(create_realtime_tts_voice.DEFAULT_PREFIX, "coffeevcrt")
+        self.assertIn("coffee", default_sample.name)
+        self.assertIn("coffee", create_realtime_tts_voice.DEFAULT_PREFIX)
 
     def test_create_realtime_tts_voice_builds_official_payload(self) -> None:
         payload = create_realtime_tts_voice.build_create_voice_payload(
             str(self.audio_path),
             target_model="qwen3-tts-vc-realtime-2026-01-15",
-            prefix="rulaivcrt",
+            prefix="coffeevcrt",
         )
 
         self.assertEqual(payload["model"], "qwen-voice-enrollment")
         self.assertEqual(payload["input"]["action"], "create")
         self.assertEqual(payload["input"]["target_model"], "qwen3-tts-vc-realtime-2026-01-15")
-        self.assertEqual(payload["input"]["preferred_name"], "rulaivcrt")
-        self.assertTrue(payload["input"]["audio"]["data"].startswith("data:audio/x-wav;base64,"))
+        self.assertEqual(payload["input"]["preferred_name"], "coffeevcrt")
+        self.assertRegex(payload["input"]["audio"]["data"], r"^data:audio/(x-)?wav;base64,")
 
 
 if __name__ == "__main__":

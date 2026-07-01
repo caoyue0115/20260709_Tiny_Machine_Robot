@@ -16,9 +16,12 @@ if str(ROOT) not in sys.path:
 
 from src.settings import settings
 
+DEFAULT_VOICE_SAMPLE_PATH = ROOT / "data" / "output" / "coffee_voice_sample.wav"
+DEFAULT_PREFIX = "coffeevcrt"
+
 
 def default_voice_sample_path() -> Path:
-    return ROOT / "data" / "output" / "如来佛祖_爱给网_aigei_com.wav"
+    return DEFAULT_VOICE_SAMPLE_PATH
 
 
 def inspect_audio_file(path: str | Path) -> dict:
@@ -91,7 +94,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample", default=str(default_voice_sample_path()))
     parser.add_argument("--target-model", default=settings.realtime_tts_model)
-    parser.add_argument("--prefix", default="rulaivcrt")
+    parser.add_argument("--prefix", default=DEFAULT_PREFIX)
     args = parser.parse_args()
 
     summary = inspect_audio_file(args.sample)
