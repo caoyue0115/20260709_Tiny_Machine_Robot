@@ -94,6 +94,13 @@ def _csv_contains(value: str | None, needle: str) -> bool:
     return needle in {part.strip() for part in value.split(",") if part.strip()}
 
 
+def _normalize_default_asr_provider() -> str:
+    provider = str(settings.asr_provider or ASR_PROVIDER_DASHSCOPE).strip().lower()
+    if provider not in ASR_PROVIDER_CHOICES:
+        return ASR_PROVIDER_DASHSCOPE
+    return provider
+
+
 def _asr_provider_override_for_device(device_id: str) -> str | None:
     provider = str(settings.asr_provider_override_provider or "").strip().lower()
     if provider not in ASR_PROVIDER_CHOICES:
@@ -303,9 +310,7 @@ async def stream_opus_realtime_session(
     answer_mode = "default"
     realtime_asr = None
     asr_start_task: asyncio.Task[None] | None = None
-    default_asr_provider = str(settings.asr_provider or ASR_PROVIDER_DASHSCOPE).strip().lower()
-    if default_asr_provider not in ASR_PROVIDER_CHOICES:
-        default_asr_provider = ASR_PROVIDER_DASHSCOPE
+    default_asr_provider = _normalize_default_asr_provider()
     asr_provider = default_asr_provider
     asr_primary_provider = default_asr_provider
     asr_fallback_provider: str | None = None
@@ -682,7 +687,7 @@ async def stream_opus_realtime_session(
                 run_full_chain = bool(control.get("run_full_chain", False))
                 requested_provider = _normalize_asr_provider(
                     control.get("asr_provider"),
-                    default=str(settings.asr_provider or ASR_PROVIDER_DASHSCOPE).strip().lower(),
+                    default=default_asr_provider,
                 )
                 requested_provider = _asr_provider_override_for_device(x_device_id) or requested_provider
                 if requested_provider not in ASR_PROVIDER_CHOICES:
