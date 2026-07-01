@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -242,7 +243,7 @@ class EspAssetTests(unittest.TestCase):
             output = tmp_path / "esp_compile_only_v37_p3d_002_20260520.tar.gz"
             result = subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     str(ROOT / "scripts" / "package_esp_compile_only.py"),
                     "--source",
                     str(source_root),
@@ -317,7 +318,7 @@ class EspAssetTests(unittest.TestCase):
             output = tmp_path / "esp_compile_only_with_managed.tar.gz"
             subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     str(ROOT / "scripts" / "package_esp_compile_only.py"),
                     "--source",
                     str(source_root),
