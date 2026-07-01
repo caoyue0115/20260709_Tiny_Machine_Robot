@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     sqlite_path: str = "./data/tasks.db"
     public_base_url: str = "http://localhost:8010"
     ota_artifact_dir: str = "./data/ota_artifacts"
-    queue_name: str = "religion_tasks"
+    queue_name: str = "tiny_coffee_tasks"
     max_upload_mb: int = 3
     max_audio_seconds: int = 8
     chunk_size: int = 300
@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3.5-flash-2026-02-23"
     llm_temperature: float = 0.2
     llm_max_tokens: int = 256
-    asr_provider: str = "dashscope"
-    asr_fallback_provider: str = ""
+    asr_provider: str = "volcengine"
+    asr_fallback_provider: str = "dashscope"
     asr_provider_override_device_ids: str = ""
     asr_provider_override_provider: str = ""
     asr_model: str = "paraformer-realtime-v2"
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     realtime_tts_model: str = "qwen3-tts-vc-realtime-2026-01-15"
     realtime_tts_voice: str = ""
     tts_language_type: str = "Chinese"
-    tts_instructions: str = "请使用低沉庄重、平和慈悲的男性声线，语速略慢，停顿自然。"
+    tts_instructions: str = "请使用明亮、亲切、有一点活泼感的中文声音，语速自然，适合咖啡小问答播报。"
     tts_timeout_seconds: int = 20
     dashscope_playback_rate: float = 1.0
     request_timeout_seconds: int = 30
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     default_sample_width_bits: int = 16
     default_channels: int = 1
     audio_content_type: str = "audio/wav"
-    realtime_enabled: bool = False
+    realtime_enabled: bool = True
     realtime_session_ttl_seconds: int = 900
     realtime_stream_first_chunk_timeout_ms: int = 5000
     realtime_stream_idle_timeout_ms: int = 8000
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     realtime_audio_sample_width_bits: int = 16
     realtime_audio_channels: int = 1
     realtime_audio_endian: str = "little"
-    realtime_audio_enable_opus: bool = False
+    realtime_audio_enable_opus: bool = True
     realtime_audio_opus_sample_rate: int = 16000
     realtime_audio_opus_channels: int = 1
     realtime_audio_opus_frame_duration_ms: int = 60
@@ -71,13 +71,24 @@ class Settings(BaseSettings):
     realtime_tts_warmup_enabled: bool = True
     realtime_llm_compact_top_k: int = 1
     realtime_llm_compact_snippet_chars: int = 36
-    project_name: str = "Religion Cloud Demo"
+    project_name: str = "Tiny Coffee Machine"
     version: str = "0.1.0"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
     def project_root(self) -> Path:
+        override = getattr(self, "_project_root_override", None)
+        if override is not None:
+            return override
         return Path(__file__).resolve().parents[1]
+
+    @project_root.setter
+    def project_root(self, value: Path) -> None:
+        object.__setattr__(self, "_project_root_override", Path(value))
+
+    @project_root.deleter
+    def project_root(self) -> None:
+        object.__setattr__(self, "_project_root_override", None)
 
     @property
     def data_dir(self) -> Path:
@@ -100,7 +111,7 @@ class Settings(BaseSettings):
 
     @property
     def kb_dir(self) -> Path:
-        return self.data_dir / "buddhism"
+        return self.data_dir / "coffee"
 
     @property
     def logs_dir(self) -> Path:
