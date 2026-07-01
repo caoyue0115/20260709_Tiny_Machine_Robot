@@ -42,6 +42,13 @@ def test_coffee_asr_normalization_covers_direct_coffee_terms(
     assert rules == expected_rules
 
 
+def test_coffee_asr_normalization_chains_order_dependent_rules() -> None:
+    normalized, rules = realtime_session.normalize_coffee_asr_text("手充加啡怎么冲")
+
+    assert normalized == "手冲咖啡怎么冲"
+    assert rules == ["手充->手冲", "手冲加啡->手冲咖啡"]
+
+
 def test_reject_prompt_is_coffee_specific() -> None:
     assert realtime_session.COFFEE_RETRY_TEXT == "我还没听清，可以再问我一个咖啡问题吗？"
     assert DOMAIN_COFFEE_RETRY_TEXT == realtime_session.COFFEE_RETRY_TEXT
