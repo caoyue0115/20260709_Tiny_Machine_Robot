@@ -18,4 +18,14 @@ idf.py -C esp_idf_demo `
 idf.py -C esp_idf_demo -p COM6 flash monitor
 ```
 
+Warning: `-DDEMO_WIFI_PASSWORD=...` is expanded into the ESP-IDF CMake/build tree. Treat `esp_idf_demo\build` as sensitive until it is removed.
+
+After flashing, clear the shell secrets and delete local build artifacts:
+
+```powershell
+Remove-Item Env:\TINY_WIFI_PASSWORD -ErrorAction SilentlyContinue
+Remove-Item Env:\TINY_WIFI_SSID -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force esp_idf_demo\build
+```
+
 Acceptance requires saying `小明同学`, asking one coffee question, and hearing a coffee answer.
