@@ -7,6 +7,7 @@ import wave
 from collections.abc import Iterable
 from pathlib import Path
 
+from src.domain.coffee import COFFEE_RETRY_TEXT
 from src.providers.asr import transcribe_wav_result
 from src.providers.llm import stream_answer_text
 from src.providers.realtime_tts import (
@@ -23,7 +24,6 @@ from src.storage.realtime_store import InMemoryRealtimeSessionStore
 
 
 ANSWER_MODE_SHORT = "short"
-COFFEE_RETRY_TEXT = "我还没听清，可以再问我一个咖啡问题吗？"
 _SENTENCE_ENDINGS = "。！？!?；;…"
 _SOFT_CUT_HINTS = "，、,：: "
 _ASR_NORMALIZATION_RULES: tuple[tuple[str, str], ...] = (

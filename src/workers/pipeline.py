@@ -5,11 +5,11 @@ import time
 from redis import Redis
 from rq import Queue
 
+from src.domain.coffee import COFFEE_RETRY_TEXT
 from src.providers.asr import ASRResult, transcribe_wav_result
 from src.providers.llm import generate_answer
 from src.providers.tts import synthesize_audio
 from src.rag.retriever import is_coffee_question, retrieve_references
-from src.services.realtime_session import COFFEE_RETRY_TEXT
 from src.settings import settings
 from src.storage.db import fetch_task, mark_task_done, mark_task_failed, update_task_status
 
