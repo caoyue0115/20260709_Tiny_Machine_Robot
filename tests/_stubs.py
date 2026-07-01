@@ -148,7 +148,22 @@ def install_dependency_stubs() -> None:
 
     if "faiss" not in sys.modules:
         module = types.ModuleType("faiss")
+
+        class IndexFlatIP:
+            def __init__(self, dim: int) -> None:
+                self.dim = dim
+                self.vectors = []
+
+            def add(self, vectors) -> None:
+                self.vectors.extend(vectors)
+
+        def write_index(_index, path) -> None:
+            with open(path, "wb") as fh:
+                fh.write(b"FAISS-STUB")
+
         module.read_index = lambda *_args, **_kwargs: None
+        module.write_index = write_index
+        module.IndexFlatIP = IndexFlatIP
         sys.modules["faiss"] = module
 
     if "jieba" not in sys.modules:
@@ -157,15 +172,18 @@ def install_dependency_stubs() -> None:
         sys.modules["jieba"] = module
 
     if "numpy" not in sys.modules:
-        module = types.ModuleType("numpy")
-        module.ndarray = object
-        module.float32 = "float32"
-        module.asarray = lambda values, dtype=None: values
-        module.zeros = lambda shape, dtype=None: [[0.0 for _ in range(shape[1])] for _ in range(shape[0])]
-        module.min = min
-        module.max = max
-        module.linalg = types.SimpleNamespace(norm=lambda _value: 0.0)
-        sys.modules["numpy"] = module
+        try:
+            __import__("numpy")
+        except ModuleNotFoundError:
+            module = types.ModuleType("numpy")
+            module.ndarray = object
+            module.float32 = "float32"
+            module.asarray = lambda values, dtype=None: values
+            module.zeros = lambda shape, dtype=None: [[0.0 for _ in range(shape[1])] for _ in range(shape[0])]
+            module.min = min
+            module.max = max
+            module.linalg = types.SimpleNamespace(norm=lambda _value: 0.0)
+            sys.modules["numpy"] = module
 
     if "rank_bm25" not in sys.modules:
         module = types.ModuleType("rank_bm25")

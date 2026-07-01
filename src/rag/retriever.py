@@ -2,34 +2,160 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import re
 from pathlib import Path
 from typing import Any
 
-import faiss
-import jieba
 import numpy as np
-from rank_bm25 import BM25Okapi
+
+try:
+    import faiss
+except ModuleNotFoundError:
+
+    class _FallbackIndexFlatIP:
+        def __init__(self, dim: int) -> None:
+            self.dim = dim
+            self.vectors = np.empty((0, dim), dtype=np.float32)
+
+        def add(self, vectors: np.ndarray) -> None:
+            arr = np.asarray(vectors, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[1] != self.dim:
+                raise ValueError("index vectors must match embedding dimension")
+            self.vectors = np.vstack([self.vectors, arr])
+
+        def search(self, queries: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+            q = np.asarray(queries, dtype=np.float32)
+            if q.ndim != 2 or q.shape[1] != self.dim:
+                raise ValueError("query vectors must match embedding dimension")
+            if self.vectors.size == 0:
+                scores = np.full((q.shape[0], k), -np.inf, dtype=np.float32)
+                ids = np.full((q.shape[0], k), -1, dtype=np.int64)
+                return scores, ids
+
+            raw_scores = q @ self.vectors.T
+            take = min(k, self.vectors.shape[0])
+            ids = np.argsort(-raw_scores, axis=1)[:, :take]
+            scores = np.take_along_axis(raw_scores, ids, axis=1)
+            if take < k:
+                pad_scores = np.full((q.shape[0], k - take), -np.inf, dtype=np.float32)
+                pad_ids = np.full((q.shape[0], k - take), -1, dtype=np.int64)
+                scores = np.concatenate([scores, pad_scores], axis=1)
+                ids = np.concatenate([ids, pad_ids], axis=1)
+            return scores.astype(np.float32), ids.astype(np.int64)
+
+    class _FallbackFaiss:
+        IndexFlatIP = _FallbackIndexFlatIP
+
+        @staticmethod
+        def write_index(index: _FallbackIndexFlatIP, path: str) -> None:
+            with open(path, "wb") as fh:
+                pickle.dump({"dim": index.dim, "vectors": index.vectors}, fh)
+
+        @staticmethod
+        def read_index(path: str) -> _FallbackIndexFlatIP:
+            with open(path, "rb") as fh:
+                payload = pickle.load(fh)
+            index = _FallbackIndexFlatIP(int(payload["dim"]))
+            index.vectors = np.asarray(payload["vectors"], dtype=np.float32)
+            return index
+
+    faiss = _FallbackFaiss()
+
+try:
+    import jieba
+except ModuleNotFoundError:
+
+    class _JiebaFallback:
+        @staticmethod
+        def cut(text: str) -> list[str]:
+            return re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\s]", text)
+
+    jieba = _JiebaFallback()
+
+try:
+    from rank_bm25 import BM25Okapi
+except ModuleNotFoundError:
+
+    class BM25Okapi:
+        def __init__(self, tokenized_corpus: list[list[str]]) -> None:
+            self.tokenized_corpus = [list(doc) for doc in tokenized_corpus]
+
+        def get_scores(self, tokens: list[str]) -> np.ndarray:
+            query_terms = set(tokens)
+            scores = [sum(doc.count(term) for term in query_terms) for doc in self.tokenized_corpus]
+            return np.asarray(scores, dtype=np.float32)
 
 from src.settings import settings
 
-BUDDHIST_KEYWORDS = [
-    "佛",
-    "菩萨",
-    "观音",
-    "观世音",
-    "佛法",
-    "经",
-    "修行",
-    "慈悲",
-    "业",
-    "因果",
-    "般若",
-    "无相",
-    "空性",
-    "涅槃",
-    "四圣谛",
-    "八正道",
+COFFEE_KEYWORDS = [
+    "coffee",
+    "coffee bean",
+    "coffee beans",
+    "hand brew",
+    "hand-brew",
+    "pour over",
+    "espresso",
+    "latte",
+    "cappuccino",
+    "americano",
+    "milk coffee",
+    "grind",
+    "grinding",
+    "extraction",
+    "roast",
+    "roasting",
+    "light roast",
+    "medium roast",
+    "dark roast",
+    "flavor",
+    "flavour",
+    "acid",
+    "acidity",
+    "bitter",
+    "bitterness",
+    "sweetness",
+    "process",
+    "processing",
+    "water temp",
+    "water temperature",
+    "brew ratio",
+    "咖啡",
+    "咖啡豆",
+    "豆子",
+    "手冲",
+    "手冲咖啡",
+    "意式",
+    "浓缩",
+    "意式浓缩",
+    "拿铁",
+    "卡布奇诺",
+    "美式",
+    "奶咖",
+    "牛奶咖啡",
+    "研磨",
+    "磨豆",
+    "萃取",
+    "烘焙",
+    "浅烘",
+    "浅烘焙",
+    "中烘",
+    "中度烘焙",
+    "深烘",
+    "深度烘焙",
+    "风味",
+    "酸",
+    "酸质",
+    "苦",
+    "苦味",
+    "甜感",
+    "处理法",
+    "日晒",
+    "水洗",
+    "蜜处理",
+    "水温",
+    "粉水比",
+    "冲煮比例",
 ]
 
 
@@ -125,17 +251,22 @@ def to_float32_matrix(vectors: np.ndarray) -> np.ndarray:
 
 
 def index_paths() -> tuple[Path, Path]:
-    return settings.indices_dir / "buddhism.meta.json", settings.indices_dir / "buddhism.faiss"
+    return settings.indices_dir / "coffee.meta.json", settings.indices_dir / "coffee.faiss"
+
+
+def is_coffee_question(question: str) -> bool:
+    normalized = question.casefold()
+    return any(keyword.casefold() in normalized for keyword in COFFEE_KEYWORDS)
 
 
 def is_buddhist_question(question: str) -> bool:
-    return any(k in question for k in BUDDHIST_KEYWORDS)
+    return is_coffee_question(question)
 
 
 def retrieve_references(question_text: str, top_k: int | None = None) -> tuple[list[dict[str, Any]], float]:
     meta_file, faiss_file = index_paths()
     if not meta_file.exists() or not faiss_file.exists():
-        raise FileNotFoundError("buddhism index not found; run ingest first")
+        raise FileNotFoundError("coffee index not found; run coffee ingest first")
     meta = json.loads(meta_file.read_text(encoding="utf-8"))
     index = faiss.read_index(str(faiss_file))
     chunks = meta["chunks"]
@@ -191,4 +322,3 @@ def retrieve_references(question_text: str, top_k: int | None = None) -> tuple[l
         )
     top_score = float(refs[0]["score"]) if refs else 0.0
     return refs, top_score
-

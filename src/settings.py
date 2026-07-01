@@ -111,7 +111,18 @@ class Settings(BaseSettings):
 
     @property
     def kb_dir(self) -> Path:
+        override = getattr(self, "_kb_dir_override", None)
+        if override is not None:
+            return override
         return self.data_dir / "coffee"
+
+    @kb_dir.setter
+    def kb_dir(self, value: Path) -> None:
+        object.__setattr__(self, "_kb_dir_override", Path(value))
+
+    @kb_dir.deleter
+    def kb_dir(self) -> None:
+        object.__setattr__(self, "_kb_dir_override", None)
 
     @property
     def logs_dir(self) -> Path:
@@ -119,7 +130,18 @@ class Settings(BaseSettings):
 
     @property
     def indices_dir(self) -> Path:
+        override = getattr(self, "_indices_dir_override", None)
+        if override is not None:
+            return override
         return self.project_root / "indices"
+
+    @indices_dir.setter
+    def indices_dir(self, value: Path) -> None:
+        object.__setattr__(self, "_indices_dir_override", Path(value))
+
+    @indices_dir.deleter
+    def indices_dir(self) -> None:
+        object.__setattr__(self, "_indices_dir_override", None)
 
     @property
     def sqlite_file(self) -> Path:
