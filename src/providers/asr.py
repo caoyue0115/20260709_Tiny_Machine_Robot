@@ -70,10 +70,40 @@ def _is_main_thread() -> bool:
     return threading.current_thread() is threading.main_thread()
 
 
+def _supports_signal_timeout() -> bool:
+    return all(hasattr(signal, attr) for attr in ("SIGALRM", "ITIMER_REAL", "setitimer"))
+
+
+def _run_with_thread_timeout(recognition: Any, audio_path: str, timeout_seconds: float) -> Any:
+    outcome: list[tuple[bool, Any]] = []
+
+    def _target() -> None:
+        try:
+            outcome.append((True, recognition.call(audio_path)))
+        except BaseException as exc:
+            outcome.append((False, exc))
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        raise TimeoutError(f"ASR timed out after {timeout_seconds:.3f}s")
+    if not outcome:
+        raise RuntimeError("ASR worker exited without returning a result")
+
+    succeeded, value = outcome[0]
+    if not succeeded:
+        raise value
+    return value
+
+
 def _run_with_timeout(recognition: Any, audio_path: str) -> Any:
     if not _is_main_thread():
         return recognition.call(audio_path)
     timeout_seconds = max(float(settings.asr_timeout_seconds), 0.001)
+    if not _supports_signal_timeout():
+        return _run_with_thread_timeout(recognition, audio_path, timeout_seconds)
+
     previous_handler = signal.getsignal(signal.SIGALRM)
     try:
         signal.signal(signal.SIGALRM, _alarm_handler)
