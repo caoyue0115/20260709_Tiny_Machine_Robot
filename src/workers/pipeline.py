@@ -8,7 +8,7 @@ from rq import Queue
 from src.providers.asr import ASRResult, transcribe_wav_result
 from src.providers.llm import generate_answer
 from src.providers.tts import synthesize_audio
-from src.rag.retriever import is_buddhist_question, retrieve_references
+from src.rag.retriever import is_coffee_question, retrieve_references
 from src.settings import settings
 from src.storage.db import fetch_task, mark_task_done, mark_task_failed, update_task_status
 
@@ -49,7 +49,7 @@ def run_pipeline(task_id: str) -> None:
         references, top_score = retrieve_references(question_text, top_k=settings.top_k)
         trace["retrieval_ms"] = int((time.perf_counter() - retrieval_started) * 1000)
 
-        threshold = settings.min_top_score if is_buddhist_question(question_text) else settings.min_top_score_no_keyword
+        threshold = settings.min_top_score if is_coffee_question(question_text) else settings.min_top_score_no_keyword
         if not references or top_score < threshold:
             answer_text = "佛说不可曰"
         else:

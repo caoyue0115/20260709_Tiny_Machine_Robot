@@ -17,7 +17,7 @@ from src.providers.realtime_tts import (
     warmup_realtime_tts_session,
 )
 from src.providers.tts import synthesize_audio
-from src.rag.retriever import is_buddhist_question, retrieve_references
+from src.rag.retriever import is_coffee_question, retrieve_references
 from src.settings import settings
 from src.storage.realtime_store import InMemoryRealtimeSessionStore
 
@@ -368,7 +368,7 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             _elapsed_ms(overall_started),
         )
     updated["trace"]["retrieval_top_score"] = top_score
-    threshold = settings.min_top_score if is_buddhist_question(question_text) else settings.min_top_score_no_keyword
+    threshold = settings.min_top_score if is_coffee_question(question_text) else settings.min_top_score_no_keyword
     is_reject = (not references) or top_score < threshold
     store.update_session(session_id, step="llm", trace=updated["trace"])
     if is_reject:

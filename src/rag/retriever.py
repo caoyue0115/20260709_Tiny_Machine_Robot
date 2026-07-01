@@ -257,12 +257,6 @@ def index_paths() -> tuple[Path, Path]:
 def is_coffee_question(question: str) -> bool:
     normalized = question.casefold()
     return any(keyword.casefold() in normalized for keyword in COFFEE_KEYWORDS)
-
-
-def is_buddhist_question(question: str) -> bool:
-    return is_coffee_question(question)
-
-
 def retrieve_references(question_text: str, top_k: int | None = None) -> tuple[list[dict[str, Any]], float]:
     meta_file, faiss_file = index_paths()
     if not meta_file.exists() or not faiss_file.exists():

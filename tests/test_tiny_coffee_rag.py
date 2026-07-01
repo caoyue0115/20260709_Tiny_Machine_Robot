@@ -18,6 +18,13 @@ def test_coffee_question_detection_uses_coffee_words() -> None:
     assert not retriever.is_coffee_question("今天天气怎么样")
 
 
+def test_old_domain_rag_entrypoints_are_not_exposed() -> None:
+    legacy_question_checker = "is_" + "buddhist_question"
+    legacy_ingester = "ingest_" + "buddhism_docs"
+    assert not hasattr(retriever, legacy_question_checker)
+    assert not hasattr(ingest, legacy_ingester)
+
+
 def test_index_paths_are_coffee_specific(tmp_path: Path) -> None:
     with mock.patch.object(retriever.settings, "indices_dir", tmp_path):
         meta_file, faiss_file = retriever.index_paths()

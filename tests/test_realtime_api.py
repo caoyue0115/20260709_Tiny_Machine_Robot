@@ -325,7 +325,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -377,7 +377,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -657,7 +657,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch("src.services.realtime_session.transcribe_wav_result", return_value=ASRResult("什么是无相", None, None)), mock.patch(
                 "src.services.realtime_session.retrieve_references",
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
-            ), mock.patch("src.services.realtime_session.is_buddhist_question", return_value=True), mock.patch(
+            ), mock.patch("src.services.realtime_session.is_coffee_question", return_value=True), mock.patch(
                 "src.services.realtime_session.stream_answer_text",
                 return_value=iter(["真实回答"]),
             ), mock.patch(
@@ -709,7 +709,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch("src.services.realtime_session.transcribe_wav_result", return_value=ASRResult("什么是无相", None, None)), mock.patch(
                 "src.services.realtime_session.retrieve_references",
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
-            ), mock.patch("src.services.realtime_session.is_buddhist_question", return_value=True), mock.patch(
+            ), mock.patch("src.services.realtime_session.is_coffee_question", return_value=True), mock.patch(
                 "src.services.realtime_session.stream_answer_text",
                 return_value=iter(["真实回答"]),
             ), mock.patch(
@@ -745,7 +745,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
             ) as retrieve, mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -805,7 +805,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=([], 0.0),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ):
             realtime_session_service.run_stub_realtime_session(store, session["session_id"])
@@ -860,7 +860,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=(references, 0.9),
             ), mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -899,7 +899,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -935,7 +935,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -978,7 +978,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -1041,7 +1041,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=(references, 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -1107,7 +1107,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=(references, 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -1153,7 +1153,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -1202,7 +1202,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -1262,7 +1262,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -1307,7 +1307,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -1355,7 +1355,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -1418,7 +1418,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -1452,7 +1452,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
-            "is_buddhist_question",
+            "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
@@ -1528,7 +1528,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "阿弥陀佛", "snippet": "无量光寿", "text": "无量光寿"}], 0.9),
             ) as retrieve_references, mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,
@@ -1571,7 +1571,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 return_value=([{"source_title": "慧远", "snippet": "净土宗祖师", "text": "净土宗祖师"}], 0.9),
             ) as retrieve_references, mock.patch.object(
                 realtime_session_service,
-                "is_buddhist_question",
+                "is_coffee_question",
                 return_value=True,
             ), mock.patch.object(
                 realtime_session_service,

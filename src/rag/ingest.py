@@ -83,7 +83,3 @@ def ingest_coffee_docs() -> dict[str, Any]:
         "meta_file": str(meta_file),
         "faiss_file": str(faiss_file),
     }
-
-
-def ingest_buddhism_docs() -> dict[str, Any]:
-    return ingest_coffee_docs()
