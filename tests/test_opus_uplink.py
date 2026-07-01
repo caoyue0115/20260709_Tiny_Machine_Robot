@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import time
@@ -23,8 +24,19 @@ install_dependency_stubs()
 from fastapi import HTTPException
 
 
+COFFEE_QUESTION = "手冲咖啡为什么会偏酸"
+COFFEE_QUESTION_PUNCTUATED = "手冲咖啡为什么会偏酸？"
+COFFEE_QUESTION_ASR_TYPO = "情问手冲咖啡为什么会偏酸？"
+COFFEE_ANSWER_SHORT = "水温偏低或研磨偏粗时，酸味会更明显。"
+COFFEE_ANSWER_FULL = "水温偏低会让酸感更突出，研磨偏粗也会放大酸味。"
+COFFEE_TERM = "手冲咖啡"
+COFFEE_ALT_TERM = "拿铁"
+COFFEE_ERROR_TERM = "水洗豆"
+
+
 def _write_test_wav(pcm_bytes: bytes, *, sample_rate: int = 16000, channels: int = 1) -> str:
     fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
     Path(path).unlink(missing_ok=True)
     with wave.open(path, "wb") as writer:
         writer.setnchannels(channels)
@@ -32,6 +44,12 @@ def _write_test_wav(pcm_bytes: bytes, *, sample_rate: int = 16000, channels: int
         writer.setframerate(sample_rate)
         writer.writeframes(pcm_bytes)
     return path
+
+
+def _temp_path(suffix: str) -> Path:
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    return Path(path)
 
 
 def _outer_frame(sequence: int, payload: bytes) -> bytes:
@@ -124,7 +142,7 @@ class _FakeStreamingAsrAdapter:
     def __init__(
         self,
         *,
-        text: str | None = "请解释阿弥陀佛是什么意思",
+        text: str | None = COFFEE_QUESTION,
         error_code: str | None = None,
         request_id: str = "req-test",
         start_delay_seconds: float = 0.0,
@@ -266,7 +284,7 @@ class OpusUplinkProviderTests(unittest.TestCase):
         def _server_result_frame() -> bytes:
             payload = {
                 "result": {
-                    "text": "请解释阿弥陀佛是什么意思？",
+                    "text": COFFEE_QUESTION_PUNCTUATED,
                     "additions": {"log_id": "volc-log-1"},
                 }
             }
@@ -330,12 +348,12 @@ class OpusUplinkProviderTests(unittest.TestCase):
             result = session.finish()
 
         self.assertIsNone(result.error_code)
-        self.assertEqual(result.text, "请解释阿弥陀佛是什么意思？")
+        self.assertEqual(result.text, COFFEE_QUESTION_PUNCTUATED)
         self.assertEqual(result.request_id, "volc-log-1")
         self.assertEqual(result.close_code, 1000)
         self.assertIn("Connection to remote host was lost", result.close_reason)
         self.assertEqual(result.last_log_id, "volc-log-1")
-        self.assertEqual(result.last_result_text, "请解释阿弥陀佛是什么意思？")
+        self.assertEqual(result.last_result_text, COFFEE_QUESTION_PUNCTUATED)
         self.assertEqual(result.packets_received, 1)
         self.assertTrue(fake_ws.closed)
 
@@ -654,7 +672,7 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         self.assertIn("asr_final", payload_types)
         done_payload = websocket.sent_json[-1]
         self.assertEqual(done_payload["type"], "done")
-        self.assertEqual(done_payload["question_text"], "请解释阿弥陀佛是什么意思")
+        self.assertEqual(done_payload["question_text"], COFFEE_QUESTION)
         self.assertIsInstance(done_payload["done_abs_ms"], int)
         self.assertFalse(done_payload["session_started"])
         self.assertEqual(done_payload["asr_provider"], "dashscope")
@@ -843,13 +861,13 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         session = realtime_api.store.get_session(done_payload["session_id"])
         self.assertIsNotNone(session)
         trace = session["trace"]
-        self.assertEqual(trace["asr_raw_text"], "请解释阿弥陀佛是什么意思")
-        self.assertEqual(trace["asr_normalized_text"], "请解释阿弥陀佛是什么意思")
+        self.assertEqual(trace["asr_raw_text"], COFFEE_QUESTION)
+        self.assertEqual(trace["asr_normalized_text"], COFFEE_QUESTION)
         self.assertFalse(trace["asr_normalization_applied"])
         self.assertEqual(trace["asr_normalization_rules"], [])
         self.assertEqual(trace["asr_provider_used"], "dashscope")
         start_from_question.assert_called_once()
-        self.assertEqual(start_from_question.call_args.args[2], "请解释阿弥陀佛是什么意思")
+        self.assertEqual(start_from_question.call_args.args[2], COFFEE_QUESTION)
 
     def test_stream_opus_realtime_session_passes_short_answer_mode_to_session(self) -> None:
         from src.api import realtime as realtime_api
@@ -1320,7 +1338,7 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         )
         primary_asr = _FakeStreamingAsrAdapter(text=None, error_code="volcengine_asr_empty_text")
         fallback_asr = _FakeStreamingAsrAdapter(
-            text="请解释阿弥陀佛是什么意思",
+            text=COFFEE_QUESTION,
             request_id="dash-fallback",
         )
 
@@ -1379,7 +1397,7 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         self.assertIn("asr_primary_provider_log_id=req-test", fallback_logs)
         self.assertIn("provider_log_id=dash-fallback", fallback_logs)
         start_from_question.assert_called_once()
-        self.assertEqual(start_from_question.call_args.args[2], "请解释阿弥陀佛是什么意思")
+        self.assertEqual(start_from_question.call_args.args[2], COFFEE_QUESTION)
 
     def test_stream_opus_realtime_session_reports_all_providers_failed_after_fallback(self) -> None:
         from src.api import realtime as realtime_api
@@ -1559,7 +1577,7 @@ class V5StreamingLatencyEvalScriptTests(unittest.TestCase):
             "first_asr_partial_abs_ms": 2823,
             "asr_final_abs_ms": 5675,
             "done_abs_ms": 5923,
-            "question_text": "情解释阿弥陀佛是什么意思？",
+            "question_text": COFFEE_QUESTION_ASR_TYPO,
             "error_code": None,
             "session_id": "session-1",
             "realtime_asr_request_id": "request-1",
@@ -1567,7 +1585,7 @@ class V5StreamingLatencyEvalScriptTests(unittest.TestCase):
         status_payload = {
             "session_id": "session-1",
             "status": "done",
-            "answer_text": "阿弥陀佛是西方极乐世界教主。",
+            "answer_text": COFFEE_ANSWER_SHORT,
             "trace": {
                 "retrieval_done_abs_ms": 6342,
                 "first_llm_chunk_abs_ms": 8588,
@@ -1579,8 +1597,8 @@ class V5StreamingLatencyEvalScriptTests(unittest.TestCase):
         }
 
         record = module.build_streaming_latency_record(
-            term="阿弥陀佛",
-            audio_path="/tmp/volc_asr_eval/amitabha.wav",
+            term=COFFEE_TERM,
+            audio_path="/tmp/coffee_asr_eval/hand_brew.wav",
             done_payload=done_payload,
             status_payload=status_payload,
         )
@@ -1600,7 +1618,7 @@ class V5StreamingLatencyEvalScriptTests(unittest.TestCase):
         self.assertEqual(record["first_audio_byte_abs_ms"], 10176)
         self.assertEqual(record["done_abs_ms"], 13910)
         self.assertTrue(record["term_hit"])
-        self.assertEqual(record["answer_chars"], 14)
+        self.assertEqual(record["answer_chars"], len(COFFEE_ANSWER_SHORT))
         self.assertEqual(record["session_id"], "session-1")
         self.assertEqual(record["log_id"], "request-1")
 
@@ -1615,14 +1633,14 @@ class V5StreamingLatencyEvalScriptTests(unittest.TestCase):
         module = _load_v5_streaming_latency_eval_script()
 
         record = module.build_error_record(
-            term="金刚经",
-            audio_path="/tmp/volc_asr_eval/diamond_sutra.wav",
+            term=COFFEE_ERROR_TERM,
+            audio_path="/tmp/coffee_asr_eval/washed_beans.wav",
             path_type="streaming",
             error_code="smoke_failed",
             error_message="connection refused",
         )
 
-        self.assertEqual(record["term"], "金刚经")
+        self.assertEqual(record["term"], COFFEE_ERROR_TERM)
         self.assertEqual(record["path_type"], "streaming")
         self.assertEqual(record["error_code"], "smoke_failed")
         self.assertEqual(record["error_message"], "connection refused")
@@ -1665,7 +1683,7 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
             return {
                 "type": "done",
                 "asr_provider": "dashscope",
-                "question_text": "请解释阿弥陀佛是什么意思？",
+                "question_text": COFFEE_QUESTION_PUNCTUATED,
                 "first_frame_server_abs_ms": 4,
                 "provider_start_duration_ms": 70,
                 "first_pcm_sent_to_provider_abs_ms": 72,
@@ -1678,8 +1696,8 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
 
         with mock.patch.object(module, "run_stream_smoke", side_effect=_fake_run_stream_smoke):
             record = module.run_asr_only_case(
-                term="阿弥陀佛",
-                audio_path=Path("/tmp/volc_asr_eval/amitabha.wav"),
+                term=COFFEE_TERM,
+                audio_path=Path("/tmp/coffee_asr_eval/hand_brew.wav"),
                 repeat_index=2,
                 provider="dashscope",
                 base_url="http://127.0.0.1:8010",
@@ -1694,7 +1712,7 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
         self.assertEqual(calls[0]["asr_fallback_provider"], None)
         self.assertEqual(record["repeat_index"], 2)
         self.assertTrue(record["term_hit"])
-        self.assertEqual(record["question_text"], "请解释阿弥陀佛是什么意思？")
+        self.assertEqual(record["question_text"], COFFEE_QUESTION_PUNCTUATED)
         self.assertEqual(record["asr_final_abs_ms"], 5200)
         self.assertEqual(record["provider_log_id"], "req-1")
 
@@ -1703,8 +1721,8 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
 
         with mock.patch.object(module, "run_stream_smoke", side_effect=RuntimeError("connection refused")):
             record = module.run_asr_only_case(
-                term="金刚经",
-                audio_path=Path("/tmp/volc_asr_eval/diamond_sutra.wav"),
+                term=COFFEE_ERROR_TERM,
+                audio_path=Path("/tmp/coffee_asr_eval/washed_beans.wav"),
                 repeat_index=1,
                 provider="volcengine",
                 base_url="http://127.0.0.1:8010",
@@ -1714,7 +1732,7 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
             )
 
         self.assertEqual(record["provider"], "volcengine")
-        self.assertEqual(record["term"], "金刚经")
+        self.assertEqual(record["term"], COFFEE_ERROR_TERM)
         self.assertFalse(record["term_hit"])
         self.assertEqual(record["error_code"], "smoke_failed")
         self.assertIn("connection refused", record["error_message"])
@@ -1724,10 +1742,10 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
         records = [
             {
                 "provider": "dashscope",
-                "term": "阿弥陀佛",
+                "term": COFFEE_TERM,
                 "repeat_index": 1,
-                "question_text": "请解释阿弥陀佛是什么意思？",
-                "recognized_text": "请解释阿弥陀佛是什么意思？",
+                "question_text": COFFEE_QUESTION_PUNCTUATED,
+                "recognized_text": COFFEE_QUESTION_PUNCTUATED,
                 "term_hit": True,
                 "asr_final_abs_ms": 5000,
                 "provider_start_duration_ms": 70,
@@ -1736,10 +1754,10 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
             },
             {
                 "provider": "dashscope",
-                "term": "阿弥陀佛",
+                "term": COFFEE_TERM,
                 "repeat_index": 2,
-                "question_text": "情解释阿弥陀佛是什么意思？",
-                "recognized_text": "情解释阿弥陀佛是什么意思？",
+                "question_text": COFFEE_QUESTION_ASR_TYPO,
+                "recognized_text": COFFEE_QUESTION_ASR_TYPO,
                 "term_hit": True,
                 "asr_final_abs_ms": 6000,
                 "provider_start_duration_ms": 80,
@@ -1748,10 +1766,10 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
             },
             {
                 "provider": "volcengine",
-                "term": "阿弥陀佛",
+                "term": COFFEE_TERM,
                 "repeat_index": 1,
-                "question_text": "请解释阿弥陀佛是什么意思？",
-                "recognized_text": "请解释阿弥陀佛是什么意思？",
+                "question_text": COFFEE_QUESTION_PUNCTUATED,
+                "recognized_text": COFFEE_QUESTION_PUNCTUATED,
                 "term_hit": True,
                 "asr_final_abs_ms": 4300,
                 "provider_start_duration_ms": 1800,
@@ -1759,7 +1777,7 @@ class V5AsrOnlyRepeatEvalScriptTests(unittest.TestCase):
                 "error_code": None,
             },
         ]
-        output_path = Path(tempfile.mkstemp(suffix=".md")[1])
+        output_path = _temp_path(".md")
         try:
             module.write_markdown(records, output_path)
             content = output_path.read_text(encoding="utf-8")
@@ -1810,7 +1828,7 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
             return {
                 "type": "done",
                 "asr_provider": "volcengine",
-                "question_text": "请解释阿弥陀佛是什么意思？",
+                "question_text": COFFEE_QUESTION_PUNCTUATED,
                 "asr_final_abs_ms": 4300,
                 "first_provider_result_abs_ms": 3900,
                 "provider_start_duration_ms": 1500,
@@ -1820,8 +1838,8 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
                 "error_code": None,
                 "session_status": {
                     "session_id": "session-1",
-                    "question_text": "请解释阿弥陀佛是什么意思？",
-                    "answer_text": "阿弥陀佛是无量光寿。念佛是归向净土的核心方便。",
+                    "question_text": COFFEE_QUESTION_PUNCTUATED,
+                    "answer_text": COFFEE_ANSWER_FULL,
                     "error_code": None,
                     "trace": {
                         "retrieval_done_abs_ms": 5200,
@@ -1836,8 +1854,8 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
 
         with mock.patch.object(module, "run_stream_smoke", side_effect=_fake_run_stream_smoke):
             record = module.run_full_chain_case(
-                term="阿弥陀佛",
-                audio_path=Path("/tmp/volc_asr_eval/amitabha.wav"),
+                term=COFFEE_TERM,
+                audio_path=Path("/tmp/coffee_asr_eval/hand_brew.wav"),
                 repeat_index=1,
                 provider="volcengine",
                 base_url="http://127.0.0.1:8010",
@@ -1866,8 +1884,8 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
 
         with mock.patch.object(module, "run_stream_smoke", side_effect=RuntimeError("connection refused")):
             record = module.run_full_chain_case(
-                term="慧远",
-                audio_path=Path("/tmp/volc_asr_eval/huiyuan.wav"),
+                term=COFFEE_ALT_TERM,
+                audio_path=Path("/tmp/coffee_asr_eval/latte.wav"),
                 repeat_index=2,
                 provider="dashscope",
                 base_url="http://127.0.0.1:8010",
@@ -1881,7 +1899,7 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
             )
 
         self.assertEqual(record["provider"], "dashscope")
-        self.assertEqual(record["term"], "慧远")
+        self.assertEqual(record["term"], COFFEE_ALT_TERM)
         self.assertEqual(record["repeat_index"], 2)
         self.assertEqual(record["error_code"], "smoke_failed")
         self.assertIn("connection refused", record["error_message"])
@@ -1891,10 +1909,10 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
         records = [
             {
                 "provider": "dashscope",
-                "term": "阿弥陀佛",
+                "term": COFFEE_TERM,
                 "repeat_index": 1,
-                "question_text": "情解释阿弥陀佛是什么意思？",
-                "recognized_text": "情解释阿弥陀佛是什么意思？",
+                "question_text": COFFEE_QUESTION_ASR_TYPO,
+                "recognized_text": COFFEE_QUESTION_ASR_TYPO,
                 "term_hit": True,
                 "asr_final_abs_ms": 5000,
                 "first_audio_byte_abs_ms": 9000,
@@ -1905,10 +1923,10 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
             },
             {
                 "provider": "volcengine",
-                "term": "阿弥陀佛",
+                "term": COFFEE_TERM,
                 "repeat_index": 1,
-                "question_text": "请解释阿弥陀佛是什么意思？",
-                "recognized_text": "请解释阿弥陀佛是什么意思？",
+                "question_text": COFFEE_QUESTION_PUNCTUATED,
+                "recognized_text": COFFEE_QUESTION_PUNCTUATED,
                 "term_hit": True,
                 "asr_final_abs_ms": 4300,
                 "first_audio_byte_abs_ms": 8200,
@@ -1918,7 +1936,7 @@ class V5FullChainRepeatEvalScriptTests(unittest.TestCase):
                 "error_code": None,
             },
         ]
-        output_path = Path(tempfile.mkstemp(suffix=".md")[1])
+        output_path = _temp_path(".md")
         try:
             module.write_markdown(records, output_path)
             content = output_path.read_text(encoding="utf-8")
@@ -1946,9 +1964,9 @@ class V5RealVoiceEvalScriptTests(unittest.TestCase):
         module = _load_v5_real_voice_eval_script()
         tmp_dir = Path(tempfile.mkdtemp())
         try:
-            (tmp_dir / "amitabha_01.wav").write_bytes(b"wav")
-            (tmp_dir / "amitabha_02.wav").write_bytes(b"wav")
-            (tmp_dir / "huiyuan_01.wav").write_bytes(b"wav")
+            (tmp_dir / "hand_brew_01.wav").write_bytes(b"wav")
+            (tmp_dir / "hand_brew_02.wav").write_bytes(b"wav")
+            (tmp_dir / "latte_01.wav").write_bytes(b"wav")
 
             cases = module.discover_real_voice_cases(tmp_dir)
         finally:
@@ -1959,8 +1977,8 @@ class V5RealVoiceEvalScriptTests(unittest.TestCase):
         self.assertEqual(
             [(case["term"], case["speaker_index"], case["audio_path"].name) for case in cases],
             [
-                ("阿弥陀佛", 1, "amitabha_01.wav"),
-                ("阿弥陀佛", 2, "amitabha_02.wav"),
-                ("慧远", 1, "huiyuan_01.wav"),
+                (COFFEE_TERM, 1, "hand_brew_01.wav"),
+                (COFFEE_TERM, 2, "hand_brew_02.wav"),
+                (COFFEE_ALT_TERM, 1, "latte_01.wav"),
             ],
         )

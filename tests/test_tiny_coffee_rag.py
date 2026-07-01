@@ -15,9 +15,12 @@ from src.rag import retriever
 def test_coffee_question_detection_uses_coffee_words() -> None:
     assert retriever.is_coffee_question("手冲咖啡为什么会偏酸")
     assert retriever.is_coffee_question("拿铁和卡布奇诺有什么区别")
+    assert retriever.is_coffee_question("豆子水洗处理法有什么风味特点")
     assert not retriever.is_coffee_question("今天天气怎么样")
     assert not retriever.is_coffee_question("这杯水有点酸")
-    assert not retriever.is_coffee_question("process manager 怎么重启")
+    assert not retriever.is_coffee_question("今天水温多少度")
+    assert not retriever.is_coffee_question("这个豆子怎么种")
+    assert not retriever.is_coffee_question("产品经理 process manager 是什么")
 
 
 def test_old_domain_rag_entrypoints_are_not_exposed() -> None:

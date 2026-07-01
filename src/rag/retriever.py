@@ -88,10 +88,8 @@ except ModuleNotFoundError:
 
 from src.settings import settings
 
-COFFEE_KEYWORDS = [
+COFFEE_ANCHOR_TERMS = [
     "coffee",
-    "coffee bean",
-    "coffee beans",
     "hand brew",
     "hand-brew",
     "pour over",
@@ -100,6 +98,24 @@ COFFEE_KEYWORDS = [
     "cappuccino",
     "americano",
     "milk coffee",
+    "咖啡",
+    "咖啡豆",
+    "手冲",
+    "手冲咖啡",
+    "浓缩咖啡",
+    "意式浓缩咖啡",
+    "拿铁",
+    "卡布奇诺",
+    "美式",
+    "奶咖",
+    "牛奶咖啡",
+]
+
+COFFEE_CONTEXT_TERMS = [
+    "coffee bean",
+    "coffee beans",
+    "bean",
+    "beans",
     "grind",
     "grinding",
     "extraction",
@@ -119,20 +135,12 @@ COFFEE_KEYWORDS = [
     "water temp",
     "water temperature",
     "brew ratio",
-    "咖啡",
-    "咖啡豆",
     "豆子",
-    "手冲",
-    "手冲咖啡",
+    "豆",
     "意式",
     "浓缩",
-    "意式浓缩",
-    "拿铁",
-    "卡布奇诺",
-    "美式",
-    "奶咖",
-    "牛奶咖啡",
     "研磨",
+    "磨豆机",
     "磨豆",
     "萃取",
     "烘焙",
@@ -254,9 +262,32 @@ def index_paths() -> tuple[Path, Path]:
     return settings.indices_dir / "coffee.meta.json", settings.indices_dir / "coffee.faiss"
 
 
+def _contains_any(normalized_text: str, terms: list[str]) -> bool:
+    return any(term.casefold() in normalized_text for term in terms)
+
+
+def _matching_context_term_count(normalized_text: str) -> int:
+    matched_spans: list[tuple[int, int]] = []
+    count = 0
+    terms = sorted({term.casefold() for term in COFFEE_CONTEXT_TERMS}, key=len, reverse=True)
+    for term in terms:
+        start = 0
+        while True:
+            idx = normalized_text.find(term, start)
+            if idx < 0:
+                break
+            span = (idx, idx + len(term))
+            if all(span[1] <= taken[0] or span[0] >= taken[1] for taken in matched_spans):
+                matched_spans.append(span)
+                count += 1
+                break
+            start = idx + 1
+    return count
+
+
 def is_coffee_question(question: str) -> bool:
     normalized = question.casefold()
-    return any(keyword.casefold() in normalized for keyword in COFFEE_KEYWORDS)
+    return _contains_any(normalized, COFFEE_ANCHOR_TERMS) or _matching_context_term_count(normalized) >= 2
 
 
 def retrieve_references(question_text: str, top_k: int | None = None) -> tuple[list[dict[str, Any]], float]:

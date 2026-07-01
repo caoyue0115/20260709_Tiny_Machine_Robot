@@ -210,15 +210,19 @@ def decode_framed_opus_to_pcm(
 
     opus_bytes = 0
     decoded = bytearray()
+    inner_packets: list[bytes] = []
+    for _sequence, payload in outer_packets:
+        if len(payload) < 2:
+            raise OpusError("opus_packet_truncated")
+        packet_len = int.from_bytes(payload[:2], "big")
+        packet = payload[2:]
+        if len(packet) != packet_len:
+            raise OpusError("opus_packet_truncated")
+        inner_packets.append(packet)
+        opus_bytes += len(packet)
+
     with LibOpusDecoder(sample_rate=sample_rate, channels=channels) as decoder:
-        for _sequence, payload in outer_packets:
-            if len(payload) < 2:
-                raise OpusError("opus_packet_truncated")
-            packet_len = int.from_bytes(payload[:2], "big")
-            packet = payload[2:]
-            if len(packet) != packet_len:
-                raise OpusError("opus_packet_truncated")
-            opus_bytes += len(packet)
+        for packet in inner_packets:
             decoded.extend(decoder.decode_packet(packet, frame_size=frame_size))
 
     pcm_bytes = len(decoded)

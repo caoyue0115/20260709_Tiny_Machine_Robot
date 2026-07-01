@@ -17,15 +17,15 @@ from scripts.opus_uplink_stream_smoke import run_stream_smoke
 
 
 CASES = [
-    ("阿弥陀佛", "amitabha.wav"),
-    ("四十八愿", "forty_eight_vows.wav"),
-    ("净土宗", "pure_land.wav"),
-    ("无量寿经", "infinite_life_sutra.wav"),
-    ("金刚经", "diamond_sutra.wav"),
-    ("般若", "prajna.wav"),
-    ("慧远", "huiyuan.wav"),
-    ("善导", "shandao.wav"),
-    ("东林寺", "donglin_temple.wav"),
+    ("手冲咖啡", "hand_brew.wav"),
+    ("拿铁", "latte.wav"),
+    ("卡布奇诺", "cappuccino.wav"),
+    ("美式", "americano.wav"),
+    ("意式浓缩", "espresso.wav"),
+    ("水洗豆", "washed_beans.wav"),
+    ("日晒豆", "natural_beans.wav"),
+    ("研磨", "grind.wav"),
+    ("拉花", "latte_art.wav"),
 ]
 
 PROVIDER_CHOICES = {"dashscope", "volcengine"}

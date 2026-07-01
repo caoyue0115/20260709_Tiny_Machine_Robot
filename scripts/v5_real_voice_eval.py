@@ -21,15 +21,15 @@ from scripts.v5_full_chain_repeat_eval import (
 
 
 REAL_VOICE_CASES = [
-    ("阿弥陀佛", "amitabha"),
-    ("四十八愿", "forty_eight_vows"),
-    ("净土宗", "pure_land"),
-    ("无量寿经", "infinite_life_sutra"),
-    ("金刚经", "diamond_sutra"),
-    ("般若", "prajna"),
-    ("慧远", "huiyuan"),
-    ("善导", "shandao"),
-    ("东林寺", "donglin_temple"),
+    ("手冲咖啡", "hand_brew"),
+    ("拿铁", "latte"),
+    ("卡布奇诺", "cappuccino"),
+    ("美式", "americano"),
+    ("意式浓缩", "espresso"),
+    ("水洗豆", "washed_beans"),
+    ("日晒豆", "natural_beans"),
+    ("研磨", "grind"),
+    ("拉花", "latte_art"),
 ]
 
 FULL_CHAIN_FIELDS = [

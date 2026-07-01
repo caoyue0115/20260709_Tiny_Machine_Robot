@@ -316,6 +316,7 @@ async def stream_opus_realtime_session(
     fallback_done_abs_ms: int | None = None
     pending_asr_pcm: list[bytes] = []
     pending_asr_pcm_bytes = 0
+    decoder: LibOpusDecoder | None = None
     provider_start_abs_ms: int | None = None
     provider_ready_abs_ms: int | None = None
     provider_start_duration_ms: int | None = None
@@ -614,118 +615,122 @@ async def stream_opus_realtime_session(
         await _flush_pending_asr_pcm(block_until_ready=block_until_ready)
 
     try:
-        with LibOpusDecoder(sample_rate=x_opus_sample_rate, channels=x_opus_channels) as decoder:
-            while True:
-                message = await websocket.receive()
-                if message.get("type") == "websocket.disconnect":
-                    await _drain_asr_start_task()
-                    await _send_stream_error(websocket, "stream_disconnected", close_code=1000)
-                    return
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                await _drain_asr_start_task()
+                await _send_stream_error(websocket, "stream_disconnected", close_code=1000)
+                return
 
-                message_bytes = message.get("bytes")
-                if message_bytes is not None:
-                    if first_frame_server_ms is None:
-                        first_frame_server_ms = int(round((time.perf_counter() - accepted_at) * 1000))
-                    outer_packets = parse_framed_v1_packets(
-                        message_bytes,
-                        expected_sequence=expected_sequence,
-                    )
-                    for sequence, payload in outer_packets:
-                        decode_started = time.perf_counter()
-                        pcm_chunk, packet_bytes = _decode_stream_opus_payload(
-                            decoder,
-                            payload,
-                            frame_size=frame_size,
-                        )
-                        decode_seconds += time.perf_counter() - decode_started
-                        if first_pcm_decoded_abs_ms is None:
-                            first_pcm_decoded_abs_ms = _server_elapsed_ms()
-                        decoded.extend(pcm_chunk)
-                        opus_bytes += packet_bytes
-                        expected_sequence = sequence + 1
-                        if realtime_asr is not None:
-                            await _enqueue_asr_pcm(pcm_chunk)
-                        last_frame_server_ms = int(round((time.perf_counter() - accepted_at) * 1000))
-                        await websocket.send_json(
-                            {
-                                "type": "ack",
-                                "frame_count": expected_sequence,
-                                "received_opus_bytes": opus_bytes,
-                                "decoded_pcm_bytes": len(decoded),
-                            }
-                        )
+            message_bytes = message.get("bytes")
+            if message_bytes is not None:
+                if first_frame_server_ms is None:
+                    first_frame_server_ms = int(round((time.perf_counter() - accepted_at) * 1000))
+                outer_packets = parse_framed_v1_packets(
+                    message_bytes,
+                    expected_sequence=expected_sequence,
+                )
+                if not outer_packets:
                     continue
+                if decoder is None:
+                    decoder = LibOpusDecoder(sample_rate=x_opus_sample_rate, channels=x_opus_channels)
+                assert decoder is not None
+                for sequence, payload in outer_packets:
+                    decode_started = time.perf_counter()
+                    pcm_chunk, packet_bytes = _decode_stream_opus_payload(
+                        decoder,
+                        payload,
+                        frame_size=frame_size,
+                    )
+                    decode_seconds += time.perf_counter() - decode_started
+                    if first_pcm_decoded_abs_ms is None:
+                        first_pcm_decoded_abs_ms = _server_elapsed_ms()
+                    decoded.extend(pcm_chunk)
+                    opus_bytes += packet_bytes
+                    expected_sequence = sequence + 1
+                    if realtime_asr is not None:
+                        await _enqueue_asr_pcm(pcm_chunk)
+                    last_frame_server_ms = int(round((time.perf_counter() - accepted_at) * 1000))
+                    await websocket.send_json(
+                        {
+                            "type": "ack",
+                            "frame_count": expected_sequence,
+                            "received_opus_bytes": opus_bytes,
+                            "decoded_pcm_bytes": len(decoded),
+                        }
+                    )
+                continue
 
-                message_text = message.get("text")
-                if message_text is None:
-                    continue
-                try:
-                    control = json.loads(message_text)
-                except json.JSONDecodeError:
+            message_text = message.get("text")
+            if message_text is None:
+                continue
+            try:
+                control = json.loads(message_text)
+            except json.JSONDecodeError:
+                await _drain_asr_start_task()
+                await _send_stream_error(websocket, "invalid_control_json", close_code=1003)
+                return
+            if control.get("type") == "start":
+                if expected_sequence != 0 or decoded:
                     await _drain_asr_start_task()
-                    await _send_stream_error(websocket, "invalid_control_json", close_code=1003)
+                    await _send_stream_error(websocket, "invalid_start_order", close_code=1003)
                     return
-                if control.get("type") == "start":
-                    if expected_sequence != 0 or decoded:
-                        await _drain_asr_start_task()
-                        await _send_stream_error(websocket, "invalid_start_order", close_code=1003)
-                        return
-                    run_asr = bool(control.get("run_asr", False))
-                    run_full_chain = bool(control.get("run_full_chain", False))
-                    requested_provider = _normalize_asr_provider(
-                        control.get("asr_provider"),
-                        default=str(settings.asr_provider or ASR_PROVIDER_DASHSCOPE).strip().lower(),
-                    )
-                    requested_provider = _asr_provider_override_for_device(x_device_id) or requested_provider
-                    if requested_provider not in ASR_PROVIDER_CHOICES:
-                        await _send_stream_error(websocket, "invalid_asr_provider", close_code=1008)
-                        return
-                    asr_provider = requested_provider
-                    asr_primary_provider = requested_provider
-                    requested_fallback = _normalize_fallback_provider(control.get("asr_fallback_provider"))
-                    if requested_fallback is not None and requested_fallback not in ASR_FALLBACK_CHOICES:
-                        await _send_stream_error(websocket, "invalid_asr_fallback_provider", close_code=1008)
-                        return
-                    asr_fallback_provider = requested_fallback
-                    if asr_fallback_provider == asr_primary_provider:
-                        asr_fallback_provider = None
-                    requested_answer_mode = str(control.get("answer_mode") or "default").strip().lower()
-                    if requested_answer_mode not in ANSWER_MODE_CHOICES:
-                        await _send_stream_error(websocket, "invalid_answer_mode", close_code=1008)
-                        return
-                    answer_mode = requested_answer_mode
-                    if run_asr:
-                        try:
-                            realtime_asr = create_realtime_asr_session(
-                                sample_rate=x_opus_sample_rate,
-                                audio_format="pcm",
-                                provider=asr_provider,
-                            )
-                            provider_start_abs_ms = _server_elapsed_ms()
-                            asr_start_task = asyncio.create_task(_run_asr_blocking_call(realtime_asr.start))
-                        except RealtimeAsrError as exc:
-                            provider_error_code = exc.code
-                            provider_error_message = exc.message
-                            asr_primary_error_code = exc.code
-                            asr_primary_error_message = exc.message
-                            if asr_fallback_provider is None:
-                                await _send_stream_error(websocket, exc.code, close_code=1011)
-                                return
-                            realtime_asr = None
-                            asr_start_task = None
-                    continue
-                if control.get("type") != "end":
-                    await _drain_asr_start_task()
-                    await _send_stream_error(websocket, "invalid_control_type", close_code=1003)
+                run_asr = bool(control.get("run_asr", False))
+                run_full_chain = bool(control.get("run_full_chain", False))
+                requested_provider = _normalize_asr_provider(
+                    control.get("asr_provider"),
+                    default=str(settings.asr_provider or ASR_PROVIDER_DASHSCOPE).strip().lower(),
+                )
+                requested_provider = _asr_provider_override_for_device(x_device_id) or requested_provider
+                if requested_provider not in ASR_PROVIDER_CHOICES:
+                    await _send_stream_error(websocket, "invalid_asr_provider", close_code=1008)
                     return
-                raw_client_duration = control.get("client_stream_duration_ms")
-                if isinstance(raw_client_duration, int):
-                    client_stream_duration_ms = raw_client_duration
-                run_session_after_stream = bool(control.get("run_session_after_stream", False))
-                if bool(control.get("run_full_chain", False)):
-                    run_full_chain = True
-                end_received_at = time.perf_counter()
-                break
+                asr_provider = requested_provider
+                asr_primary_provider = requested_provider
+                requested_fallback = _normalize_fallback_provider(control.get("asr_fallback_provider"))
+                if requested_fallback is not None and requested_fallback not in ASR_FALLBACK_CHOICES:
+                    await _send_stream_error(websocket, "invalid_asr_fallback_provider", close_code=1008)
+                    return
+                asr_fallback_provider = requested_fallback
+                if asr_fallback_provider == asr_primary_provider:
+                    asr_fallback_provider = None
+                requested_answer_mode = str(control.get("answer_mode") or "default").strip().lower()
+                if requested_answer_mode not in ANSWER_MODE_CHOICES:
+                    await _send_stream_error(websocket, "invalid_answer_mode", close_code=1008)
+                    return
+                answer_mode = requested_answer_mode
+                if run_asr:
+                    try:
+                        realtime_asr = create_realtime_asr_session(
+                            sample_rate=x_opus_sample_rate,
+                            audio_format="pcm",
+                            provider=asr_provider,
+                        )
+                        provider_start_abs_ms = _server_elapsed_ms()
+                        asr_start_task = asyncio.create_task(_run_asr_blocking_call(realtime_asr.start))
+                    except RealtimeAsrError as exc:
+                        provider_error_code = exc.code
+                        provider_error_message = exc.message
+                        asr_primary_error_code = exc.code
+                        asr_primary_error_message = exc.message
+                        if asr_fallback_provider is None:
+                            await _send_stream_error(websocket, exc.code, close_code=1011)
+                            return
+                        realtime_asr = None
+                        asr_start_task = None
+                continue
+            if control.get("type") != "end":
+                await _drain_asr_start_task()
+                await _send_stream_error(websocket, "invalid_control_type", close_code=1003)
+                return
+            raw_client_duration = control.get("client_stream_duration_ms")
+            if isinstance(raw_client_duration, int):
+                client_stream_duration_ms = raw_client_duration
+            run_session_after_stream = bool(control.get("run_session_after_stream", False))
+            if bool(control.get("run_full_chain", False)):
+                run_full_chain = True
+            end_received_at = time.perf_counter()
+            break
     except OpusError as exc:
         await _drain_asr_start_task()
         await _send_stream_error(websocket, _opus_error_detail(exc))
@@ -734,6 +739,9 @@ async def stream_opus_realtime_session(
         await _drain_asr_start_task()
         await _send_stream_error(websocket, exc.code, close_code=1011)
         return
+    finally:
+        if decoder is not None:
+            decoder.close()
 
     if not decoded:
         await _drain_asr_start_task()
