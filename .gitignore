@@ -1,17 +1,56 @@
-.env
-.venv/
+# Python caches and virtual environments.
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Runtime configuration and local secrets.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# Runtime state.
+logs/
+runtime/
+*.db
+*.sqlite
+*.sqlite3
 data/incoming/
 data/output/
-data/tasks.db
 indices/
+
+# ESP-IDF and generated firmware artifacts.
+build/
+build_*/
+managed_components/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.map
+*.uf2
+*.hex
+
+# Packaging outputs and temporary workspaces.
 tmp/
+dist/
+release/
+*.tar
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
 bug*.txt
 .codex
 *.code-workspace
-
-# Local build/dependency artifacts and handoff archives.
-esp_idf_demo/managed_components/
 esp_idf_demo_handoff_*/
-*.tar.gz
