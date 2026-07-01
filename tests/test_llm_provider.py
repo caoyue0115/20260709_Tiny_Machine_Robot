@@ -35,7 +35,7 @@ class LlmProviderTests(unittest.TestCase):
         self.assertIn("中文", messages[0]["content"])
         self.assertIn("1到3句", messages[0]["content"])
         self.assertIn("适合语音播报", messages[0]["content"])
-        self.assertIn("不要编造品牌、价格、门店、活动", messages[0]["content"])
+        self.assertIn("不要编造品牌、价格、门店或活动信息", messages[0]["content"])
         self.assertEqual(messages[1]["role"], "user")
         self.assertIn("问题：手冲咖啡为什么会偏酸", messages[1]["content"])
         self.assertIn("手冲咖啡", messages[1]["content"])
@@ -54,7 +54,7 @@ class LlmProviderTests(unittest.TestCase):
         self.assertIn("咖啡", messages[0]["content"])
         self.assertIn("1到3句", messages[0]["content"])
         self.assertIn("不超过70字", messages[0]["content"])
-        self.assertIn("不要编造品牌、价格、门店、活动", messages[0]["content"])
+        self.assertIn("不要编造品牌、价格、门店或活动信息", messages[0]["content"])
         self.assertIn("不超过70字", messages[1]["content"])
 
     def test_stream_answer_disables_thinking_for_dashscope_flash_model(self) -> None:
