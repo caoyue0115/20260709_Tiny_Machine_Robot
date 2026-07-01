@@ -13,7 +13,7 @@ services:
       - ./data:/app/data
       - ./indices:/app/indices
     ports:
-      - "80:8010"
+      - "8010:8010"
     depends_on:
       - redis
 
