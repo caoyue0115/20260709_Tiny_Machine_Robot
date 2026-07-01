@@ -14,6 +14,12 @@ class DockerComposeTests(unittest.TestCase):
         self.assertIn('"8010:8010"', compose)
         self.assertNotIn('"80:8010"', compose)
 
+    def test_guangzhou_api_binds_loopback_for_nginx_proxy(self) -> None:
+        compose = (ROOT / "docker-compose.guangzhou.yml").read_text(encoding="utf-8")
+
+        self.assertIn('"127.0.0.1:8010:8010"', compose)
+        self.assertNotIn('"80:8010"', compose)
+
 
 if __name__ == "__main__":
     unittest.main()

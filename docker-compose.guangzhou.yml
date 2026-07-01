@@ -15,7 +15,7 @@ services:
       - ${TINY_DATA_DIR:-/app/20260701_Tiny_Machine_Robot/data}:/app/data
       - ${TINY_INDICES_DIR:-/app/20260701_Tiny_Machine_Robot/indices}:/app/indices
     ports:
-      - "80:8010"
+      - "127.0.0.1:8010:8010"
     depends_on:
       - redis
 
