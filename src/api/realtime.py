@@ -303,8 +303,11 @@ async def stream_opus_realtime_session(
     answer_mode = "default"
     realtime_asr = None
     asr_start_task: asyncio.Task[None] | None = None
-    asr_provider = ASR_PROVIDER_DASHSCOPE
-    asr_primary_provider = ASR_PROVIDER_DASHSCOPE
+    default_asr_provider = str(settings.asr_provider or ASR_PROVIDER_DASHSCOPE).strip().lower()
+    if default_asr_provider not in ASR_PROVIDER_CHOICES:
+        default_asr_provider = ASR_PROVIDER_DASHSCOPE
+    asr_provider = default_asr_provider
+    asr_primary_provider = default_asr_provider
     asr_fallback_provider: str | None = None
     asr_provider_used: str | None = None
     asr_fallback_used = False
