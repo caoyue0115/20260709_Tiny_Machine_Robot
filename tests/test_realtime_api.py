@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from datetime import datetime, timedelta, timezone
@@ -22,6 +24,7 @@ from fastapi import HTTPException
 
 def _write_test_wav(pcm_bytes: bytes) -> str:
     fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
     Path(path).unlink(missing_ok=True)
     with wave.open(path, "wb") as writer:
         writer.setnchannels(1)
@@ -71,10 +74,10 @@ class RealtimeSchemaTests(unittest.TestCase):
                 "audio_stream_first_byte_ms": 4300,
                 "first_audio_byte_ms": None,
                 "done_ms": None,
-                "asr_raw_text": "48院有哪些？",
-                "asr_normalized_text": "四十八愿有哪些？",
+                "asr_raw_text": "拿贴和卡布其诺有什么区别？",
+                "asr_normalized_text": "拿铁和卡布奇诺有什么区别？",
                 "asr_normalization_applied": True,
-                "asr_normalization_rules": ["48院->四十八愿"],
+                "asr_normalization_rules": ["拿贴->拿铁", "卡布其诺->卡布奇诺"],
                 "asr_primary_provider": "volcengine",
                 "asr_provider_used": "dashscope",
                 "asr_fallback_provider": "dashscope",
@@ -92,7 +95,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 "close_reason": "Connection to remote host was lost.",
                 "last_payload_type": 9,
                 "last_log_id": "volc-log-1",
-                "last_result_text": "请解释阿弥陀佛是什么意思？",
+                "last_result_text": "拿铁和卡布奇诺有什么区别？",
                 "packets_received": 1,
             },
             error_code=None,
@@ -105,10 +108,10 @@ class RealtimeSchemaTests(unittest.TestCase):
         self.assertEqual(payload.trace.tts_chunk_count, 12)
         self.assertEqual(payload.trace.tts_total_audio_bytes, 4096)
         self.assertEqual(payload.trace.audio_stream_first_byte_ms, 4300)
-        self.assertEqual(payload.trace.asr_raw_text, "48院有哪些？")
-        self.assertEqual(payload.trace.asr_normalized_text, "四十八愿有哪些？")
+        self.assertEqual(payload.trace.asr_raw_text, "拿贴和卡布其诺有什么区别？")
+        self.assertEqual(payload.trace.asr_normalized_text, "拿铁和卡布奇诺有什么区别？")
         self.assertTrue(payload.trace.asr_normalization_applied)
-        self.assertEqual(payload.trace.asr_normalization_rules, ["48院->四十八愿"])
+        self.assertEqual(payload.trace.asr_normalization_rules, ["拿贴->拿铁", "卡布其诺->卡布奇诺"])
         self.assertIsNone(payload.trace.tts_warmup_ms)
         self.assertIsNone(payload.trace.tts_warmup_failed)
         self.assertEqual(payload.trace.asr_primary_provider, "volcengine")
@@ -128,7 +131,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         self.assertEqual(payload.trace.close_reason, "Connection to remote host was lost.")
         self.assertEqual(payload.trace.last_payload_type, 9)
         self.assertEqual(payload.trace.last_log_id, "volc-log-1")
-        self.assertEqual(payload.trace.last_result_text, "请解释阿弥陀佛是什么意思？")
+        self.assertEqual(payload.trace.last_result_text, "拿铁和卡布奇诺有什么区别？")
         self.assertEqual(payload.trace.packets_received, 1)
 
     def test_settings_expose_realtime_defaults(self) -> None:
@@ -152,12 +155,12 @@ class RealtimeSchemaTests(unittest.TestCase):
         from src.services.realtime_session import split_realtime_answer_text
 
         segments = split_realtime_answer_text(
-            "诸法因缘生。诸法因缘灭。自净其意，是诸佛教。",
+            "水温偏高会过萃。研磨太细会偏苦。粉水比偏浓会更厚重。",
             min_chars=4,
             max_chars=20,
         )
 
-        self.assertEqual(segments, ["诸法因缘生。", "诸法因缘灭。", "自净其意，是诸佛教。"])
+        self.assertEqual(segments, ["水温偏高会过萃。", "研磨太细会偏苦。", "粉水比偏浓会更厚重。"])
 
     def test_realtime_text_segmenter_forces_split_when_no_punctuation(self) -> None:
         from src.services.realtime_session import split_realtime_answer_text
@@ -174,30 +177,30 @@ class RealtimeSchemaTests(unittest.TestCase):
         from src.services.realtime_session import split_realtime_answer_text
 
         segments = split_realtime_answer_text(
-            "色即是空，空即是色，受想行识，亦复如是",
+            "水温偏高，研磨偏细，萃取偏多，苦味明显",
             min_chars=4,
             max_chars=6,
         )
 
-        self.assertEqual(segments, ["色即是空，", "空即是色，", "受想行识，", "亦复如是"])
+        self.assertEqual(segments, ["水温偏高，", "研磨偏细，", "萃取偏多，", "苦味明显"])
 
     def test_realtime_stream_buffer_emits_segment_at_soft_pause_once_min_chars_reached(self) -> None:
         from src.services.realtime_session import _split_stream_buffer
 
         ready, remaining = _split_stream_buffer(
-            "诸法无我，诸行无常",
+            "研磨偏细，萃取偏多",
             min_chars=4,
             max_chars=20,
         )
 
-        self.assertEqual(ready, ["诸法无我，"])
-        self.assertEqual(remaining, "诸行无常")
+        self.assertEqual(ready, ["研磨偏细，"])
+        self.assertEqual(remaining, "萃取偏多")
 
     def test_realtime_stream_buffer_emits_first_segment_by_shorter_limit(self) -> None:
         from src.services.realtime_session import _split_stream_buffer
 
         ready, remaining = _split_stream_buffer(
-            "诸法因缘生起于心中",
+            "拿铁奶感更顺一些",
             min_chars=8,
             max_chars=40,
             first_segment=True,
@@ -205,14 +208,14 @@ class RealtimeSchemaTests(unittest.TestCase):
             first_segment_max_chars=10,
         )
 
-        self.assertEqual(ready, ["诸法因缘生起于心中"])
+        self.assertEqual(ready, ["拿铁奶感更顺一些"])
         self.assertEqual(remaining, "")
 
     def test_realtime_stream_buffer_waits_for_first_segment_min_chars(self) -> None:
         from src.services.realtime_session import _split_stream_buffer
 
         ready, remaining = _split_stream_buffer(
-            "诸法因缘",
+            "拿铁奶感",
             min_chars=8,
             max_chars=40,
             first_segment=True,
@@ -221,7 +224,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(ready, [])
-        self.assertEqual(remaining, "诸法因缘")
+        self.assertEqual(remaining, "拿铁奶感")
 
     def test_store_creates_and_fetches_session(self) -> None:
         from src.storage.realtime_store import InMemoryRealtimeSessionStore
@@ -272,6 +275,7 @@ class RealtimeSchemaTests(unittest.TestCase):
 
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1")
+        time.sleep(0.001)
 
         updated = store.update_session(
             session["session_id"],
@@ -318,11 +322,11 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ), mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -370,11 +374,11 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ), mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -599,7 +603,15 @@ class RealtimeSchemaTests(unittest.TestCase):
         realtime_api.store.append_audio_chunk(session["session_id"], pcm_frame)
         realtime_api.store.finish_audio(session["session_id"])
 
-        with mock.patch.object(realtime_api.settings, "realtime_audio_enable_opus", True):
+        with mock.patch.object(realtime_api.settings, "realtime_audio_enable_opus", True), mock.patch.object(
+            realtime_api,
+            "opus_available",
+            return_value=True,
+        ), mock.patch.object(
+            realtime_api,
+            "encode_pcm_stream_to_framed_opus",
+            return_value=iter([b"\x00\x03abc"]),
+        ):
             response = realtime_api.get_realtime_audio(
                 session["session_id"],
                 x_accept_audio_format="opus,pcm",
@@ -654,9 +666,9 @@ class RealtimeSchemaTests(unittest.TestCase):
         realtime_api.store.update_session(session["session_id"], input_wav_path="/tmp/test.wav")
         wav_path = _write_test_wav(b"\x01\x02\x03\x04")
         try:
-            with mock.patch("src.services.realtime_session.transcribe_wav_result", return_value=ASRResult("什么是无相", None, None)), mock.patch(
+            with mock.patch("src.services.realtime_session.transcribe_wav_result", return_value=ASRResult("手冲咖啡为什么会偏酸", None, None)), mock.patch(
                 "src.services.realtime_session.retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch("src.services.realtime_session.is_coffee_question", return_value=True), mock.patch(
                 "src.services.realtime_session.stream_answer_text",
                 return_value=iter(["真实回答"]),
@@ -674,7 +686,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         self.assertEqual(updated["step"], "done")
         self.assertEqual(updated["final_reason"], "completed_answer")
         self.assertEqual(updated["answer_text"], "真实回答")
-        self.assertEqual(updated["question_text"], "什么是无相")
+        self.assertEqual(updated["question_text"], "手冲咖啡为什么会偏酸")
         self.assertIsNotNone(updated["trace"]["asr_ms"])
         self.assertIsNotNone(updated["trace"]["retrieval_ms"])
         self.assertIsNotNone(updated["trace"]["first_llm_chunk_ms"])
@@ -706,9 +718,9 @@ class RealtimeSchemaTests(unittest.TestCase):
 
         wav_path = _write_test_wav(b"\x01\x02\x03\x04")
         try:
-            with mock.patch("src.services.realtime_session.transcribe_wav_result", return_value=ASRResult("什么是无相", None, None)), mock.patch(
+            with mock.patch("src.services.realtime_session.transcribe_wav_result", return_value=ASRResult("手冲咖啡为什么会偏酸", None, None)), mock.patch(
                 "src.services.realtime_session.retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch("src.services.realtime_session.is_coffee_question", return_value=True), mock.patch(
                 "src.services.realtime_session.stream_answer_text",
                 return_value=iter(["真实回答"]),
@@ -738,11 +750,11 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ) as transcribe, mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ) as retrieve, mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -762,8 +774,8 @@ class RealtimeSchemaTests(unittest.TestCase):
 
         updated = store.get_session(session["session_id"])
         transcribe.assert_called_once_with("/tmp/test.wav")
-        retrieve.assert_called_once_with("什么是无相", top_k=realtime_session_service.settings.top_k)
-        self.assertEqual(updated["question_text"], "什么是无相")
+        retrieve.assert_called_once_with("手冲咖啡为什么会偏酸", top_k=realtime_session_service.settings.top_k)
+        self.assertEqual(updated["question_text"], "手冲咖啡为什么会偏酸")
         self.assertEqual(updated["final_reason"], "completed_answer")
 
     def test_realtime_session_marks_failed_when_asr_returns_error(self) -> None:
@@ -798,7 +810,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
@@ -813,7 +825,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         updated = store.get_session(session["session_id"])
         self.assertEqual(updated["status"], "done")
         self.assertEqual(updated["final_reason"], "completed_reject")
-        self.assertEqual(updated["answer_text"], "佛说不可曰")
+        self.assertEqual(updated["answer_text"], "我还没听清，可以再问我一个咖啡问题吗？")
 
     def test_realtime_session_marks_failed_when_retrieval_raises(self) -> None:
         from src.services import realtime_session as realtime_session_service
@@ -826,11 +838,11 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
-            side_effect=FileNotFoundError("buddhism index not found; run ingest first"),
+            side_effect=FileNotFoundError("coffee index not found; run coffee ingest first"),
         ):
             realtime_session_service.run_stub_realtime_session(store, session["session_id"])
 
@@ -844,7 +856,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         from src.storage.realtime_store import InMemoryRealtimeSessionStore
         from src.providers.asr import ASRResult
 
-        references = [{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}]
+        references = [{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}]
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1", input_wav_path="/tmp/test.wav")
 
@@ -853,7 +865,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ), mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
@@ -876,7 +888,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             Path(wav_path).unlink(missing_ok=True)
 
         updated = store.get_session(session["session_id"])
-        stream_answer_text.assert_called_once_with("什么是无相", references)
+        stream_answer_text.assert_called_once_with("手冲咖啡为什么会偏酸", references)
         self.assertEqual(updated["status"], "done")
         self.assertEqual(updated["final_reason"], "completed_answer")
         self.assertEqual(updated["answer_text"], "真实回答")
@@ -892,11 +904,11 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
-            return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+            return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
             "is_coffee_question",
@@ -928,11 +940,11 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ), mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -971,11 +983,11 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
-            return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+            return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
             "is_coffee_question",
@@ -983,7 +995,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         ), mock.patch.object(
             realtime_session_service,
             "stream_answer_text",
-            return_value=iter(["诸法因缘生。", "诸法因缘灭。"]),
+            return_value=iter(["拿铁奶感生。", "拿铁奶感灭。"]),
         ), mock.patch.object(
             realtime_session_service,
             "realtime_tts_health",
@@ -1001,7 +1013,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         updated = store.get_session(session["session_id"])
         self.assertEqual(updated["status"], "done")
         stream_realtime_tts_chunks.assert_called_once()
-        self.assertEqual(observed_segments, ["诸法因缘生。", "诸法因缘灭。"])
+        self.assertEqual(observed_segments, ["拿铁奶感生。", "拿铁奶感灭。"])
         synthesize_audio.assert_not_called()
         self.assertEqual(
             list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
@@ -1015,8 +1027,8 @@ class RealtimeSchemaTests(unittest.TestCase):
         from src.providers.realtime_tts import RealtimeTtsError
 
         references = [
-            {"source_title": "金刚经", "snippet": "一二三四五六七八九十一二三四五六七八九十", "text": "一二三四五六七八九十一二三四五六七八九十"},
-            {"source_title": "楞严经", "snippet": "第二条证据", "text": "第二条证据"},
+            {"source_title": "手冲咖啡", "snippet": "一二三四五六七八九十一二三四五六七八九十", "text": "一二三四五六七八九十一二三四五六七八九十"},
+            {"source_title": "意式咖啡", "snippet": "第二条咖啡证据", "text": "第二条咖啡证据"},
         ]
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1", input_wav_path="/tmp/test.wav")
@@ -1034,7 +1046,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
@@ -1064,7 +1076,7 @@ class RealtimeSchemaTests(unittest.TestCase):
 
         updated = store.get_session(session["session_id"])
         self.assertEqual(len(observed_references), 1)
-        self.assertEqual(observed_references[0]["source_title"], "金刚经")
+        self.assertEqual(observed_references[0]["source_title"], "手冲咖啡")
         self.assertLessEqual(
             len(observed_references[0]["snippet"]),
             realtime_session_service.settings.realtime_llm_compact_snippet_chars,
@@ -1077,8 +1089,8 @@ class RealtimeSchemaTests(unittest.TestCase):
         from src.providers.asr import ASRResult
 
         references = [
-            {"source_title": "金刚经", "snippet": "第一条很长的证据文本", "text": "第一条很长的证据文本"},
-            {"source_title": "楞严经", "snippet": "第二条证据", "text": "第二条证据"},
+            {"source_title": "手冲咖啡", "snippet": "第一条很长的咖啡证据文本", "text": "第一条很长的咖啡证据文本"},
+            {"source_title": "意式咖啡", "snippet": "第二条咖啡证据", "text": "第二条咖啡证据"},
         ]
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1", input_wav_path="/tmp/test.wav")
@@ -1100,7 +1112,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         ), mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
@@ -1146,11 +1158,11 @@ class RealtimeSchemaTests(unittest.TestCase):
         ), mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
-            return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+            return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
             "is_coffee_question",
@@ -1195,11 +1207,11 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
-            return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+            return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
             "is_coffee_question",
@@ -1238,13 +1250,13 @@ class RealtimeSchemaTests(unittest.TestCase):
         state = {"first_segment_started": False}
 
         def _stream_answer_text(_question_text: str, _references: list[dict]):
-            yield "诸法因缘生。"
+            yield "拿铁奶感生。"
             self.assertTrue(state["first_segment_started"])
-            yield "诸法因缘灭。"
+            yield "拿铁奶感灭。"
 
         def _stream_realtime_tts_chunks(text_chunks):
             for segment in text_chunks:
-                if segment == "诸法因缘生。":
+                if segment == "拿铁奶感生。":
                     state["first_segment_started"] = True
                     yield b"\x01\x00"
                     continue
@@ -1255,11 +1267,11 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
-            return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+            return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
             "is_coffee_question",
@@ -1300,11 +1312,11 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ), mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -1348,11 +1360,11 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ), mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -1360,7 +1372,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             ), mock.patch.object(
                 realtime_session_service,
                 "stream_answer_text",
-                return_value=iter(["诸法因缘生。", "诸法因缘灭。"]),
+                return_value=iter(["拿铁奶感生。", "拿铁奶感灭。"]),
             ), mock.patch.object(
                 realtime_session_service,
                 "synthesize_audio",
@@ -1372,7 +1384,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             self.assertEqual(updated["status"], "done")
             self.assertEqual(
                 [call.args[0] for call in synthesize_audio.call_args_list],
-                ["诸法因缘生。", "诸法因缘灭。"],
+                ["拿铁奶感生。", "拿铁奶感灭。"],
             )
             self.assertEqual(
                 list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
@@ -1394,12 +1406,12 @@ class RealtimeSchemaTests(unittest.TestCase):
         stream_state = {"first_tts_called": False}
 
         def _stream_answer_text(_question_text: str, _references: list[dict]):
-            yield "诸法因缘生。"
+            yield "拿铁奶感生。"
             self.assertTrue(stream_state["first_tts_called"])
-            yield "诸法因缘灭。"
+            yield "拿铁奶感灭。"
 
         def _synthesize_audio_side_effect(text: str):
-            if text == "诸法因缘生。":
+            if text == "拿铁奶感生。":
                 stream_state["first_tts_called"] = True
                 return wav_path_1, None
             current = store.get_session(session["session_id"])
@@ -1411,11 +1423,11 @@ class RealtimeSchemaTests(unittest.TestCase):
             with mock.patch.object(
                 realtime_session_service,
                 "transcribe_wav_result",
-                return_value=ASRResult("什么是无相", None, None),
+                return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
             ), mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+                return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
             ), mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -1445,11 +1457,11 @@ class RealtimeSchemaTests(unittest.TestCase):
         with mock.patch.object(
             realtime_session_service,
             "transcribe_wav_result",
-            return_value=ASRResult("什么是无相", None, None),
+            return_value=ASRResult("手冲咖啡为什么会偏酸", None, None),
         ), mock.patch.object(
             realtime_session_service,
             "retrieve_references",
-            return_value=([{"source_title": "金刚经", "snippet": "应无所住而生其心", "text": "应无所住而生其心"}], 0.9),
+            return_value=([{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低会让酸味更明显", "text": "研磨偏粗或水温偏低会让酸味更明显"}], 0.9),
         ), mock.patch.object(
             realtime_session_service,
             "is_coffee_question",
@@ -1515,7 +1527,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         wav_path = _write_test_wav(b"\x01\x00\x02\x00")
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1")
-        question_text = "请解释阿弥陀佛是什么意思"
+        question_text = "拿铁和卡布奇诺有什么区别"
         store.update_session(session["session_id"], question_text=question_text)
 
         try:
@@ -1525,7 +1537,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             ) as transcribe_wav_result, mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "阿弥陀佛", "snippet": "无量光寿", "text": "无量光寿"}], 0.9),
+                return_value=([{"source_title": "拿铁", "snippet": "拿铁奶量更多，卡布奇诺奶泡更厚", "text": "拿铁奶量更多，卡布奇诺奶泡更厚"}], 0.9),
             ) as retrieve_references, mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -1533,7 +1545,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             ), mock.patch.object(
                 realtime_session_service,
                 "stream_answer_text",
-                return_value=iter(["阿弥陀佛是无量光寿。"]),
+                return_value=iter(["拿铁奶感更顺，卡布奇诺泡沫更厚。"]),
             ), mock.patch.object(
                 realtime_session_service,
                 "realtime_tts_health",
@@ -1554,21 +1566,30 @@ class RealtimeSchemaTests(unittest.TestCase):
         self.assertEqual(updated["question_text"], question_text)
         self.assertEqual(updated["trace"]["retrieval_top_score"], 0.9)
 
-    def test_realtime_session_normalizes_buddhist_asr_terms_before_retrieval(self) -> None:
+    def test_realtime_session_normalizes_coffee_asr_terms_before_retrieval(self) -> None:
         from src.services import realtime_session as realtime_session_service
         from src.storage.realtime_store import InMemoryRealtimeSessionStore
 
         wav_path = _write_test_wav(b"\x01\x00\x02\x00")
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1")
-        raw_question = "什么汇远之类的，48院有哪些？"
+        raw_question = "拿贴和卡布其诺有什么区别？"
         store.update_session(session["session_id"], question_text=raw_question)
 
         try:
             with mock.patch.object(
                 realtime_session_service,
                 "retrieve_references",
-                return_value=([{"source_title": "慧远", "snippet": "净土宗祖师", "text": "净土宗祖师"}], 0.9),
+                return_value=(
+                    [
+                        {
+                            "source_title": "拿铁",
+                            "snippet": "拿铁奶量更多，卡布奇诺奶泡更厚",
+                            "text": "拿铁奶量更多，卡布奇诺奶泡更厚",
+                        }
+                    ],
+                    0.9,
+                ),
             ) as retrieve_references, mock.patch.object(
                 realtime_session_service,
                 "is_coffee_question",
@@ -1576,7 +1597,7 @@ class RealtimeSchemaTests(unittest.TestCase):
             ), mock.patch.object(
                 realtime_session_service,
                 "stream_answer_text",
-                return_value=iter(["慧远与四十八愿相关回答。"]),
+                return_value=iter(["拿铁奶感更顺，卡布奇诺泡沫更厚。"]),
             ) as stream_answer_text, mock.patch.object(
                 realtime_session_service,
                 "realtime_tts_health",
@@ -1590,7 +1611,7 @@ class RealtimeSchemaTests(unittest.TestCase):
         finally:
             Path(wav_path).unlink(missing_ok=True)
 
-        normalized_question = "什么慧远之类的，四十八愿有哪些？"
+        normalized_question = "拿铁和卡布奇诺有什么区别？"
         retrieve_references.assert_called_once_with(normalized_question, top_k=mock.ANY)
         stream_answer_text.assert_called_once()
         self.assertEqual(stream_answer_text.call_args.args[0], normalized_question)
@@ -1601,23 +1622,23 @@ class RealtimeSchemaTests(unittest.TestCase):
         self.assertTrue(updated["trace"]["asr_normalization_applied"])
         self.assertEqual(
             updated["trace"]["asr_normalization_rules"],
-            ["汇远->慧远", "48院->四十八愿"],
+            ["拿贴->拿铁", "卡布其诺->卡布奇诺"],
         )
 
-    def test_buddhist_asr_normalization_covers_known_terms(self) -> None:
-        from src.services.realtime_session import normalize_buddhist_asr_text
+    def test_coffee_asr_normalization_covers_known_terms(self) -> None:
+        from src.services.realtime_session import normalize_coffee_asr_text
 
         cases = {
-            "什么汇远之类的。": ("什么慧远之类的。", ["汇远->慧远"]),
-            "请介绍惠远。": ("请介绍慧远。", ["惠远->慧远"]),
-            "48愿有哪些？": ("四十八愿有哪些？", ["48愿->四十八愿"]),
-            "四十八院是什么？": ("四十八愿是什么？", ["四十八院->四十八愿"]),
-            "48院有哪些？": ("四十八愿有哪些？", ["48院->四十八愿"]),
+            "我想喝拿贴。": ("我想喝拿铁。", ["拿贴->拿铁"]),
+            "卡布其诺是什么？": ("卡布奇诺是什么？", ["卡布其诺->卡布奇诺"]),
+            "卡布奇洛奶泡多吗？": ("卡布奇诺奶泡多吗？", ["卡布奇洛->卡布奇诺"]),
+            "手冲加啡为什么偏酸？": ("手冲咖啡为什么偏酸？", ["手冲加啡->手冲咖啡"]),
+            "拿贴和卡布其诺有什么区别？": ("拿铁和卡布奇诺有什么区别？", ["拿贴->拿铁", "卡布其诺->卡布奇诺"]),
         }
 
         for raw_text, expected in cases.items():
             with self.subTest(raw_text=raw_text):
-                self.assertEqual(normalize_buddhist_asr_text(raw_text), expected)
+                self.assertEqual(normalize_coffee_asr_text(raw_text), expected)
 
 
 if __name__ == "__main__":

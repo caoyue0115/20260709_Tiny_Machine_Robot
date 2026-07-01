@@ -51,7 +51,7 @@ def run_pipeline(task_id: str) -> None:
 
         threshold = settings.min_top_score if is_coffee_question(question_text) else settings.min_top_score_no_keyword
         if not references or top_score < threshold:
-            answer_text = "佛说不可曰"
+            answer_text = "我还没听清，可以再问我一个咖啡问题吗？"
         else:
             update_task_status(task_id, "running", "llm", 0.7)
             llm_started = time.perf_counter()

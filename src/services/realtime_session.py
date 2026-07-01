@@ -26,11 +26,12 @@ ANSWER_MODE_SHORT = "short"
 _SENTENCE_ENDINGS = "。！？!?；;…"
 _SOFT_CUT_HINTS = "，、,：: "
 _ASR_NORMALIZATION_RULES: tuple[tuple[str, str], ...] = (
-    ("汇远", "慧远"),
-    ("惠远", "慧远"),
-    ("四十八院", "四十八愿"),
-    ("48愿", "四十八愿"),
-    ("48院", "四十八愿"),
+    ("拿贴", "拿铁"),
+    ("拿帖", "拿铁"),
+    ("卡布其诺", "卡布奇诺"),
+    ("卡布奇洛", "卡布奇诺"),
+    ("手冲加啡", "手冲咖啡"),
+    ("咖非", "咖啡"),
 )
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def _set_abs_trace(trace: dict, key: str, offset_ms: int | None, relative_ms: in
         trace[key] = offset_ms + relative_ms
 
 
-def normalize_buddhist_asr_text(text: str) -> tuple[str, list[str]]:
+def normalize_coffee_asr_text(text: str) -> tuple[str, list[str]]:
     normalized = str(text or "")
     applied_rules: list[str] = []
     for source, target in _ASR_NORMALIZATION_RULES:
@@ -108,7 +109,7 @@ def normalize_buddhist_asr_text(text: str) -> tuple[str, list[str]]:
 
 
 def _apply_asr_normalization(trace: dict, raw_text: str) -> str:
-    normalized_text, applied_rules = normalize_buddhist_asr_text(raw_text)
+    normalized_text, applied_rules = normalize_coffee_asr_text(raw_text)
     trace["asr_raw_text"] = raw_text
     trace["asr_normalized_text"] = normalized_text
     trace["asr_normalization_applied"] = bool(applied_rules)
@@ -372,7 +373,7 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
     is_reject = (not references) or top_score < threshold
     store.update_session(session_id, step="llm", trace=updated["trace"])
     if is_reject:
-        answer_text = "佛说不可曰"
+        answer_text = "我还没听清，可以再问我一个咖啡问题吗？"
         updated["trace"]["first_llm_chunk_ms"] = _elapsed_ms(overall_started)
         _set_abs_trace(
             updated["trace"],

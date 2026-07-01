@@ -21,38 +21,40 @@ class LlmProviderTests(unittest.TestCase):
 
         self.assertEqual(Settings().llm_model, "qwen3.5-flash-2026-02-23")
 
-    def test_build_messages_instructs_definition_and_core_idea_style(self) -> None:
+    def test_build_messages_uses_coffee_persona_and_scope(self) -> None:
         from src.providers.llm import _build_messages
 
         messages = _build_messages(
-            "什么是无相",
-            [{"source_title": "金刚经", "snippet": "凡所有相，皆是虚妄"}],
+            "手冲咖啡为什么会偏酸",
+            [{"source_title": "手冲咖啡", "snippet": "研磨偏粗或水温偏低时，酸味会更明显。"}],
         )
 
         self.assertEqual(messages[0]["role"], "system")
-        self.assertIn("定义", messages[0]["content"])
-        self.assertIn("核心思想", messages[0]["content"])
-        self.assertIn("40字", messages[0]["content"])
-        self.assertIn("不要把“根据某法师", messages[0]["content"])
+        self.assertIn("小机仔", messages[0]["content"])
+        self.assertIn("咖啡", messages[0]["content"])
+        self.assertIn("中文", messages[0]["content"])
+        self.assertIn("1到3句", messages[0]["content"])
+        self.assertIn("适合语音播报", messages[0]["content"])
+        self.assertIn("不要编造品牌、价格、门店、活动", messages[0]["content"])
         self.assertEqual(messages[1]["role"], "user")
-        self.assertIn("先给一句定义", messages[1]["content"])
-        self.assertIn("第二句补核心思想", messages[1]["content"])
-        self.assertIn("问题：什么是无相", messages[1]["content"])
-        self.assertIn("金刚经", messages[1]["content"])
+        self.assertIn("问题：手冲咖啡为什么会偏酸", messages[1]["content"])
+        self.assertIn("手冲咖啡", messages[1]["content"])
+        self.assertIn("研磨偏粗", messages[1]["content"])
 
     def test_short_answer_mode_uses_stricter_length_prompt(self) -> None:
         from src.providers.llm import _build_messages
 
         messages = _build_messages(
-            "什么是阿弥陀佛",
-            [{"source_title": "阿弥陀佛", "snippet": "无量光寿"}],
+            "拿铁和卡布奇诺有什么区别",
+            [{"source_title": "拿铁", "snippet": "拿铁奶量更多，卡布奇诺奶泡更厚。"}],
             answer_mode="short",
         )
 
-        self.assertIn("两句话内", messages[0]["content"])
+        self.assertIn("小机仔", messages[0]["content"])
+        self.assertIn("咖啡", messages[0]["content"])
+        self.assertIn("1到3句", messages[0]["content"])
         self.assertIn("不超过70字", messages[0]["content"])
-        self.assertIn("先给直接解释", messages[0]["content"])
-        self.assertIn("不要长篇解释", messages[0]["content"])
+        self.assertIn("不要编造品牌、价格、门店、活动", messages[0]["content"])
         self.assertIn("不超过70字", messages[1]["content"])
 
     def test_stream_answer_disables_thinking_for_dashscope_flash_model(self) -> None:
@@ -64,7 +66,7 @@ class LlmProviderTests(unittest.TestCase):
             def create(self, **kwargs):
                 captured_kwargs.update(kwargs)
                 chunk = SimpleNamespace(
-                    choices=[SimpleNamespace(delta=SimpleNamespace(content="无相即离相。"))]
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="酸味通常来自萃取不足。"))]
                 )
                 return iter([chunk])
 
@@ -73,9 +75,9 @@ class LlmProviderTests(unittest.TestCase):
         )
 
         with patch.object(llm, "_build_client", return_value=fake_client):
-            chunks = list(llm.stream_answer_text("什么是无相", []))
+            chunks = list(llm.stream_answer_text("手冲咖啡为什么会偏酸", []))
 
-        self.assertEqual(chunks, ["无相即离相。"])
+        self.assertEqual(chunks, ["酸味通常来自萃取不足。"])
         self.assertEqual(captured_kwargs["model"], "qwen3.5-flash-2026-02-23")
         self.assertEqual(captured_kwargs["extra_body"], {"enable_thinking": False})
         self.assertTrue(captured_kwargs["stream"])
@@ -89,7 +91,7 @@ class LlmProviderTests(unittest.TestCase):
             def create(self, **kwargs):
                 captured_kwargs.update(kwargs)
                 chunk = SimpleNamespace(
-                    choices=[SimpleNamespace(delta=SimpleNamespace(content="无相即离相。"))]
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="拿铁奶感更重。"))]
                 )
                 return iter([chunk])
 
@@ -98,9 +100,9 @@ class LlmProviderTests(unittest.TestCase):
         )
 
         with patch.object(llm, "_build_client", return_value=fake_client):
-            chunks = list(llm.stream_answer_text("什么是无相", [], answer_mode="short"))
+            chunks = list(llm.stream_answer_text("拿铁和卡布奇诺有什么区别", [], answer_mode="short"))
 
-        self.assertEqual(chunks, ["无相即离相。"])
+        self.assertEqual(chunks, ["拿铁奶感更重。"])
         self.assertLessEqual(captured_kwargs["max_tokens"], 96)
         self.assertIn("不超过70字", captured_kwargs["messages"][0]["content"])
 

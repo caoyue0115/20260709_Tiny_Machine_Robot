@@ -16,11 +16,13 @@ def test_coffee_question_detection_uses_coffee_words() -> None:
     assert retriever.is_coffee_question("手冲咖啡为什么会偏酸")
     assert retriever.is_coffee_question("拿铁和卡布奇诺有什么区别")
     assert not retriever.is_coffee_question("今天天气怎么样")
+    assert not retriever.is_coffee_question("这杯水有点酸")
+    assert not retriever.is_coffee_question("process manager 怎么重启")
 
 
 def test_old_domain_rag_entrypoints_are_not_exposed() -> None:
     legacy_question_checker = "is_" + "buddhist_question"
-    legacy_ingester = "ingest_" + "buddhism_docs"
+    legacy_ingester = "ingest_" + "buddh" + "ism_docs"
     assert not hasattr(retriever, legacy_question_checker)
     assert not hasattr(ingest, legacy_ingester)
 
@@ -65,3 +67,26 @@ def test_ingest_summary_is_coffee_specific(tmp_path: Path) -> None:
     assert Path(summary["meta_file"]).name == "coffee.meta.json"
     meta = json.loads((index_dir / "coffee.meta.json").read_text(encoding="utf-8"))
     assert meta["domain"] == "coffee"
+
+
+def test_retrieve_references_rejects_non_coffee_question_after_index_built(tmp_path: Path) -> None:
+    kb_dir = tmp_path / "kb"
+    kb_dir.mkdir()
+    (kb_dir / "CF01_coffee_basics.md").write_text(
+        "# 手冲咖啡\n研磨偏细、水温偏高或粉水比偏浓时，苦味会更明显。\n",
+        encoding="utf-8",
+    )
+    index_dir = tmp_path / "indices"
+
+    with mock.patch.object(ingest.settings, "kb_dir", kb_dir), mock.patch.object(
+        ingest.settings, "indices_dir", index_dir
+    ), mock.patch.object(retriever.settings, "indices_dir", index_dir), mock.patch.object(
+        ingest.settings, "chunk_size", 80
+    ), mock.patch.object(
+        ingest.settings, "chunk_overlap", 10
+    ):
+        ingest.ingest_coffee_docs()
+        refs, top_score = retriever.retrieve_references("今天天气怎么样", top_k=3)
+
+    assert refs == []
+    assert top_score == 0.0

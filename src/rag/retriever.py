@@ -110,13 +110,12 @@ COFFEE_KEYWORDS = [
     "dark roast",
     "flavor",
     "flavour",
-    "acid",
-    "acidity",
-    "bitter",
-    "bitterness",
-    "sweetness",
-    "process",
-    "processing",
+    "coffee acidity",
+    "acidic coffee",
+    "bitter coffee",
+    "bitter flavor",
+    "coffee sweetness",
+    "processing method",
     "water temp",
     "water temperature",
     "brew ratio",
@@ -144,9 +143,10 @@ COFFEE_KEYWORDS = [
     "深烘",
     "深度烘焙",
     "风味",
-    "酸",
+    "偏酸",
+    "酸味",
     "酸质",
-    "苦",
+    "偏苦",
     "苦味",
     "甜感",
     "处理法",
@@ -257,7 +257,12 @@ def index_paths() -> tuple[Path, Path]:
 def is_coffee_question(question: str) -> bool:
     normalized = question.casefold()
     return any(keyword.casefold() in normalized for keyword in COFFEE_KEYWORDS)
+
+
 def retrieve_references(question_text: str, top_k: int | None = None) -> tuple[list[dict[str, Any]], float]:
+    if not is_coffee_question(question_text):
+        return [], 0.0
+
     meta_file, faiss_file = index_paths()
     if not meta_file.exists() or not faiss_file.exists():
         raise FileNotFoundError("coffee index not found; run coffee ingest first")
