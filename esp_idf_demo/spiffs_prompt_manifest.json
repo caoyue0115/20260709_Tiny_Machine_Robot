@@ -1,0 +1,11 @@
+{
+  "generator": "qwen-realtime-tts",
+  "audio_format": "pcm_s16le_16000hz_mono",
+  "prompts": {
+    "record_prompt_1.pcm": "请讲。",
+    "record_retry_error_1.pcm": "请重试。",
+    "record_retry_rearm_1.pcm": "请重讲。",
+    "record_retry_timeout_1.pcm": "请重新按。"
+  },
+  "notes": "Prompt text is preserved from legacy local audio; only the voice is regenerated."
+}

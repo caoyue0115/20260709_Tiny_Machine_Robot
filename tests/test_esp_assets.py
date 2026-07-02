@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 import re
@@ -224,6 +225,20 @@ class EspAssetTests(unittest.TestCase):
             self.assertTrue(prompt.exists())
             self.assertGreater(prompt.stat().st_size, 0)
             self.assertLessEqual(prompt.stat().st_size, 64 * 1024)
+
+    def test_local_prompt_manifest_preserves_original_prompt_text(self) -> None:
+        manifest = json.loads((ESP_DIR / "spiffs_prompt_manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["generator"], "qwen-realtime-tts")
+        self.assertEqual(
+            manifest["prompts"],
+            {
+                "record_prompt_1.pcm": "请讲。",
+                "record_retry_error_1.pcm": "请重试。",
+                "record_retry_rearm_1.pcm": "请重讲。",
+                "record_retry_timeout_1.pcm": "请重新按。",
+            },
+        )
 
     def test_compile_only_packager_injects_hardware_entrypoints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -534,7 +549,7 @@ class EspAssetTests(unittest.TestCase):
         self.assertIn("#define DEMO_REALTIME_AUDIO_JITTER_PREBUFFER_BYTES 81920", config)
         self.assertIn("#define DEMO_REALTIME_AUDIO_ENCODED_QUEUE_LENGTH 80", config)
         self.assertIn("#define DEMO_REALTIME_AUDIO_PCM_QUEUE_LENGTH 60", config)
-        self.assertIn("#define DEMO_REALTIME_AUDIO_QUEUE_SEND_TIMEOUT_MS 1000", config)
+        self.assertIn("#define DEMO_REALTIME_AUDIO_QUEUE_SEND_TIMEOUT_MS 15000", config)
 
     def test_spiffs_image_build_creates_missing_asset_directory(self) -> None:
         cmake = (ESP_DIR / "main" / "CMakeLists.txt").read_text(encoding="utf-8")

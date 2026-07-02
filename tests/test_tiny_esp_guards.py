@@ -10,6 +10,13 @@ def _assert_guarded_define(config: str, name: str, value: str) -> None:
     assert f"#ifndef {name}\n#define {name} {value}\n#endif" in config
 
 
+def _guarded_define_int(config: str, name: str) -> int:
+    prefix = f"#ifndef {name}\n#define {name} "
+    start = config.index(prefix) + len(prefix)
+    end = config.index("\n#endif", start)
+    return int(config[start:end].strip())
+
+
 def test_firmware_keeps_xiaoming_wake_word_and_volcengine_asr_default() -> None:
     config = (ROOT / "esp_idf_demo" / "main" / "config.h").read_text(encoding="utf-8")
 
@@ -42,3 +49,14 @@ def test_default_firmware_build_uses_lowcost_v1_audio_profile() -> None:
 
     assert "CONFIG_DEMO_TARGET_PROFILE_VOCAT_LOWCOST_16M8M=y" in defaults
     assert "CONFIG_DEMO_AUDIO_PCB_ESP_VOCAT_V1_0=y" in defaults
+
+
+def test_realtime_downlink_queue_timeout_allows_playback_backpressure() -> None:
+    config = (ROOT / "esp_idf_demo" / "main" / "config.h").read_text(encoding="utf-8")
+
+    queue_timeout_ms = _guarded_define_int(config, "DEMO_REALTIME_AUDIO_QUEUE_SEND_TIMEOUT_MS")
+    jitter_prebuffer_bytes = _guarded_define_int(config, "DEMO_REALTIME_AUDIO_JITTER_PREBUFFER_BYTES")
+    byte_rate = 16000 * 1 * 2
+    prebuffer_ms = jitter_prebuffer_bytes * 1000 // byte_rate
+
+    assert queue_timeout_ms >= prebuffer_ms * 4
