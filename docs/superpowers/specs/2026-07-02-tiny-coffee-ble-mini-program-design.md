@@ -11,7 +11,9 @@ Build the first WeChat Mini Program companion for Tiny Coffee Machine / 小机�
 - Product development starts with a BluFi compatibility spike on the target ESP32-S3 hardware and real WeChat clients. The spike must pass before mini program business features are built on top of BluFi.
 - The mini program can read the phone's currently connected Wi-Fi SSID when permissions and platform support allow it, but it never reads the Wi-Fi password. The user enters the password.
 - Chat history, avatar, voice choice, and device settings live on the Guangzhou server. The device does not talk to WeChat directly.
-- Device identity is immutable. The firmware derives `device_id` from the ESP32-S3 eFuse base MAC at first boot and uses the same value for BLE provisioning, cloud binding, realtime sessions, settings sync, and future OTA.
+- Device identity is immutable. The firmware uses the ESP32-S3 eFuse base MAC as `device_id = "tc-s3-" + lowercase_hex(efuse_base_mac)` and uses the same value for BLE provisioning, cloud binding, realtime sessions, settings sync, and future OTA.
+- Settings synchronization uses one revision rule across all fetch paths: the server is authoritative, every response carries `settings_revision`, and the firmware applies settings only at safe session boundaries.
+- The first implementation does not push settings over the realtime audio WebSocket. It uses a pre-conversation pull and a 30-second idle poll.
 - OTA is out of scope for this mini program phase.
 - The screen is a future hardware addition. Avatar upload is saved now so the future screen can display it without changing the mini program user flow.
 
@@ -114,14 +116,14 @@ Required data concepts:
 
 - WeChat user identity keyed by `openid`.
 - Device identity keyed by immutable `device_id`.
-- Device raw MAC stored only if needed for support diagnostics.
+- Device raw MAC stored as lowercase hex without separators for support diagnostics.
 - User-device binding.
 - Device settings: nickname, avatar URL, volume, voice, and monotonically increasing settings revision.
 - Chat history rows linked to device ID and session ID.
 
 Required API capabilities:
 
-- Exchange `wx.login` code for a user session.
+- Exchange `wx.login` code for a user session at `/api/wx/v1/login`.
 - Bind a provisioned device to the current user.
 - List the user's devices.
 - Read and update device settings.
@@ -130,6 +132,17 @@ Required API capabilities:
 - Let firmware pull settings by device ID using the same trusted device identity already used by the realtime device path.
 
 All `/api/wx/v1` responses include `"api_version": "1.0"`. Firmware settings responses use additive JSON fields so older firmware can ignore fields added by future mini program releases.
+
+Mini program authentication:
+
+- The mini program calls `wx.login` and sends the returned code to `/api/wx/v1/login`.
+- The backend exchanges the code with WeChat's code-to-session API using the configured appid and app secret.
+- The backend stores or updates the user row keyed by `openid`.
+- The backend returns a signed JWT with `sub = openid`, `iat`, and `exp`. The token lifetime is 7 days.
+- The mini program stores the JWT and sends `Authorization: Bearer <token>` on all `/api/wx/v1` requests after login.
+- The backend validates the JWT locally. It does not call WeChat on every mini program request.
+- The WeChat `session_key` is never returned to the mini program and is not used as an API bearer token.
+- On 401 or near expiry, the mini program calls `wx.login` again and replaces the JWT.
 
 Binding rules:
 
@@ -149,16 +162,19 @@ Firmware adds a BLE provisioning mode that can be entered when the device has no
 Device identity:
 
 - Read the ESP32-S3 eFuse base MAC.
-- Compute `device_id = "tc-s3-" + lowercase_hex(HMAC_SHA256(efuse_base_mac, TINY_COFFEE_DEVICE_ID_SALT))[0:16]`.
+- Compute `device_id = "tc-s3-" + lowercase_hex(efuse_base_mac)`. The MAC hex is 12 lowercase characters without separators.
 - Persist and reuse this `device_id`; never generate a new ID from Wi-Fi connection state, boot count, random UUID, or server response.
 - Use the same `device_id` in BLE identity response, backend binding, realtime headers, settings sync, and future OTA.
-- Use the last four hex characters of the eFuse MAC as the development pairing PIN. Production packaging should print a per-device pairing PIN or QR payload; the MAC-last-four PIN remains only as the first batch fallback.
+- Store the raw MAC and `device_id` mapping on the backend for support diagnostics. The mini program does not display raw MAC by default.
 
 BLE security:
 
 - Do not ship a no-security BluFi mode.
 - Use BluFi security with encrypted credential transport.
-- Require a pairing PIN check before accepting Wi-Fi credentials. The mini program asks the user for the PIN from the package label or uses a QR payload. The device verifies the PIN-derived proof against a provisioning nonce.
+- Require a pairing PIN check before accepting Wi-Fi credentials. First-stage production must print a per-device 4-digit numeric PIN on the device body or packaging. This is a launch gate.
+- Store the production PIN or provisioning secret in device NVS during manufacturing. The mini program asks the user for the printed PIN or scans a package QR payload.
+- Use a nonce-based challenge response before sending Wi-Fi credentials: the device sends a provisioning nonce, the mini program sends a PIN-derived proof for `device_id + nonce`, and the device accepts credentials only after proof verification.
+- Development builds may temporarily disable PIN verification only for lab BluFi spike work. This mode must be visibly labeled as lab-only and must fail production guard checks.
 - Rate-limit failed PIN attempts and keep the device in a retryable provisioning state.
 - Wi-Fi password must never be logged by firmware, mini program, or backend.
 
@@ -184,6 +200,36 @@ Firmware responsibilities:
 - Apply volume locally.
 
 Firmware must not break the realtime Opus audio path, wake-word path, or current GPIO controls.
+
+## Settings Synchronization
+
+The server is the source of truth for settings. Each settings row starts at `settings_revision = 1` when the device is first bound or its default settings are created. Every accepted mini program settings write increments the revision by 1.
+
+Firmware state:
+
+- On factory boot, local `current_revision = 0`.
+- The firmware persists `current_revision` and the last applied settings snapshot to NVS after every successful apply.
+- Reboot loads the persisted revision and snapshot before network sync.
+- Each conversation uses a frozen `session_settings` snapshot captured immediately before ASR starts.
+
+Fetch and apply rules:
+
+- Firmware fetches settings after Wi-Fi connects.
+- Firmware fetches settings before every conversation, before ASR capture starts.
+- Firmware polls settings every 30 seconds only while idle and online.
+- There is no first-version settings push over `/api/v5/realtime/opus-stream`.
+- If a response has `settings_revision > current_revision` and no conversation is active, firmware applies it immediately, persists it, and updates `current_revision`.
+- If a response has `settings_revision > current_revision` while a conversation is active, firmware stores it as `pending_settings` and applies it after the conversation finishes.
+- If a response has `settings_revision == current_revision`, firmware ignores it.
+- If a response has `settings_revision < current_revision`, firmware treats the server as authoritative, logs a warning, applies the server snapshot at the next safe boundary, persists it, and sets `current_revision` to the server value.
+- Volume, voice, nickname, and avatar changes never mutate `session_settings` after ASR has started. Volume changes and voice changes both take effect no earlier than the next conversation once a session is active.
+
+Settings API behavior:
+
+- Mini program setting writes are last-write-wins. The client does not send an expected revision and the backend does not perform optimistic-lock conflict rejection in the first implementation.
+- A successful write returns the full settings snapshot with the new `settings_revision`.
+- Firmware pull responses include `api_version`, `device_id`, `settings_revision`, `nickname`, `avatar_url`, `volume`, `voice`, and `updated_at`.
+- Unknown fields in a firmware settings response are ignored.
 
 ## Data Flow
 
@@ -215,11 +261,10 @@ Settings:
 3. Backend increments the device settings revision.
 4. Firmware pulls settings after Wi-Fi connection.
 5. Firmware pulls settings before every conversation, before ASR capture starts.
-6. While idle and online, firmware polls settings every 30 seconds if no active realtime WebSocket exists.
-7. If a realtime WebSocket is active, the server pushes a `settings_delta` event over that connection after a mini program settings update. If the device is not connected, the next pre-conversation pull or 30-second idle poll receives the change.
-8. Firmware applies volume locally when a settings update arrives. If playback is active, the new volume applies to the next playback chunk the codec accepts.
-9. Server-side realtime TTS uses the selected voice for new sessions. Voice changes do not interrupt an active TTS stream; the mini program labels voice changes as effective from the next conversation.
-10. The mini program shows a saved/downstream state: `已保存`, `等待设备同步`, or `已下发`.
+6. While idle and online, firmware polls settings every 30 seconds.
+7. Firmware applies a newer revision immediately only while idle. During a conversation, newer settings are queued as pending and applied after the session ends.
+8. Server-side realtime TTS uses the selected voice from the frozen `session_settings` snapshot for each new session.
+9. The mini program shows a saved/downstream state: `已保存`, `等待设备同步`, or `已下发`.
 
 ## Error Handling
 
@@ -240,7 +285,7 @@ The mini program must present explicit states for:
 
 The firmware must report provisioning success, Wi-Fi failure, and timeout states over BLE. If provisioning fails, the device remains discoverable long enough for the user to retry from the mini program.
 
-Backend errors use stable machine-readable codes in addition to human text. Required codes include `DEVICE_ALREADY_BOUND`, `DEVICE_NOT_BOUND`, `DEVICE_SETTINGS_CONFLICT`, `AVATAR_UPLOAD_FAILED`, and `PROVISIONING_BIND_EXPIRED`.
+Backend errors use stable machine-readable codes in addition to human text. Required codes include `DEVICE_ALREADY_BOUND`, `DEVICE_NOT_BOUND`, `AVATAR_UPLOAD_FAILED`, and `PROVISIONING_BIND_EXPIRED`.
 
 ## Open Source Reuse
 
@@ -275,11 +320,14 @@ Acceptance criteria:
 - Binding a device owned by another user returns `DEVICE_ALREADY_BOUND` and shows a clear mini program message.
 - The user can see the device in the mini program device list.
 - The latest three real chat rounds are visible for the selected device.
-- Changing volume in the mini program is pulled before the next conversation and can be pushed during an active realtime WebSocket.
+- Changing volume in the mini program is pulled before the next conversation or by the 30-second idle poll. If a conversation is active, the change is queued and applies after the conversation ends.
 - Changing voice in the mini program makes the next realtime TTS session use the selected voice.
 - Uploading an avatar stores and displays the avatar URL in the mini program.
 - `/api/wx/v1` responses include `api_version`.
 - Unknown future fields in settings responses are ignored by firmware.
+- Firmware persists `current_revision` to NVS and handles `>`, `==`, and `<` revision responses exactly as specified.
+- `/api/wx/v1/login` returns a 7-day JWT and subsequent mini program API calls use `Authorization: Bearer`.
+- Production builds require printed/stored pairing PIN verification; lab-only no-PIN mode cannot pass production guard checks.
 - Existing realtime Opus conversations continue to work.
 - Wake word and GPIO controls continue to work.
 
@@ -289,7 +337,8 @@ Recommended verification:
 - Backend integration tests for bind-device and latest-three-history behavior.
 - Firmware guard tests for BLE provisioning compile flags and SoftAP exclusion from the mini program path.
 - Firmware tests or log assertions that GPIO7 short press remains voice/wake and GPIO7 long press enters BLE provisioning only while idle.
-- Backend tests for duplicate binding, already-bound errors, settings revision increments, and `api_version`.
+- Backend tests for login token issuance, duplicate binding, already-bound errors, settings revision increments, last-write-wins settings writes, and `api_version`.
+- Firmware tests or log assertions for settings revision ordering, pending apply during active conversations, NVS revision persistence, and server-authoritative rollback handling.
 - Manual BLE provisioning test on COM6 hardware.
 - Manual mini program test on at least one Android phone and one iPhone before public use.
 
@@ -301,3 +350,5 @@ Recommended verification:
 - Multi-device family management beyond listing and selecting bound devices.
 - Silent Wi-Fi password import from the phone.
 - SoftAP provisioning flow.
+- Settings push over the realtime audio WebSocket.
+- Optimistic-lock settings conflict handling.
