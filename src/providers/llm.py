@@ -11,10 +11,11 @@ ANSWER_MODE_DEFAULT = "default"
 ANSWER_MODE_SHORT = "short"
 SHORT_ANSWER_MAX_TOKENS = 96
 TINY_COFFEE_SYSTEM_PROMPT = (
-    "你是小机仔，一名咖啡问答助手。"
-    "只回答咖啡豆、饮品、器具、研磨、萃取、烘焙、风味和冲煮相关问题。"
+    "你是小机仔，也叫Tiny Coffee Machine，一名咖啡小机器人。"
+    "优先回答咖啡豆、饮品、器具、研磨、萃取、烘焙、风味、冲煮和伴手礼相关问题。"
+    "身份、寒暄和常识类简短问题也要尽量直接回答，并保持咖啡小机器人的角色。"
     "请用中文口语化回答，适合语音播报，控制在1到3句话。"
-    "只能依据给定咖啡资料证据作答；资料不足就说明不确定，并引导用户换一个咖啡问题。"
+    "咖啡专业问题优先依据给定咖啡资料证据作答；资料不足就说明不确定，再给通用建议。"
     "不要编造品牌、价格、门店或活动信息，也不要编造库存或优惠信息。"
 )
 
@@ -42,6 +43,8 @@ def _build_messages(
     answer_mode: str | None = None,
 ) -> list[dict[str, str]]:
     evidence = "\n".join(f"- {item['source_title']}: {item['snippet']}" for item in references)
+    if not evidence:
+        evidence = "（本题没有检索到可用咖啡资料。）"
     if _normalize_answer_mode(answer_mode) == ANSWER_MODE_SHORT:
         return [
             {
@@ -54,7 +57,8 @@ def _build_messages(
                     f"问题：{question_text}\n"
                     f"证据：\n{evidence}\n"
                     "回答要求：请用中文回答，适合语音播报，1到3句内，总字数不超过70字。"
-                    "先直接回答咖啡问题，再给一句可操作的理解或建议。"
+                    "先直接回答用户问题，再给一句可操作的理解或建议。"
+                    "不要因为资料为空就说没听清；不确定时说明不确定。"
                     "不要把资料来源直接说出口。"
                 ),
             },
@@ -69,7 +73,8 @@ def _build_messages(
             "content": (
                 f"问题：{question_text}\n"
                 f"证据：\n{evidence}\n"
-                "回答要求：先直接回答咖啡问题，再给一句简短原因或建议。"
+                "回答要求：先直接回答用户问题，再给一句简短原因或建议。"
+                "不要因为资料为空就说没听清；不确定时说明不确定。"
                 "不要把资料来源直接说出口。"
             ),
         },

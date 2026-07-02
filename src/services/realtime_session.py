@@ -7,7 +7,7 @@ import wave
 from collections.abc import Iterable
 from pathlib import Path
 
-from src.domain.coffee import COFFEE_RETRY_TEXT
+from src.domain.coffee import COFFEE_RETRY_TEXT, answer_identity_question
 from src.providers.asr import transcribe_wav_result
 from src.providers.llm import stream_answer_text
 from src.providers.realtime_tts import (
@@ -374,8 +374,15 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             _elapsed_ms(overall_started),
         )
     updated["trace"]["retrieval_top_score"] = top_score
-    threshold = settings.min_top_score if is_coffee_question(question_text) else settings.min_top_score_no_keyword
-    is_reject = (not references) or top_score < threshold
+    question_is_coffee = is_coffee_question(question_text)
+    threshold = settings.min_top_score if question_is_coffee else settings.min_top_score_no_keyword
+    references_pass_threshold = bool(references) and top_score >= threshold
+    identity_answer = answer_identity_question(question_text)
+    updated["trace"]["is_coffee_question"] = question_is_coffee
+    updated["trace"]["retrieval_threshold"] = threshold
+    updated["trace"]["retrieval_passed_threshold"] = references_pass_threshold
+    updated["trace"]["identity_answer"] = bool(identity_answer)
+    is_reject = False
     store.update_session(session_id, step="llm", trace=updated["trace"])
     if is_reject:
         answer_text = COFFEE_RETRY_TEXT
@@ -387,10 +394,10 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             updated["trace"]["first_llm_chunk_ms"],
         )
     else:
-        llm_references = references
+        llm_references = references if references_pass_threshold else []
         prepared_tts_session: PreparedRealtimeTtsSession | None = None
         if realtime_tts_health():
-            llm_references = _compact_references_for_realtime_llm(references)
+            llm_references = _compact_references_for_realtime_llm(llm_references)
             if settings.realtime_tts_warmup_enabled:
                 warmup_started = time.perf_counter()
                 try:
@@ -401,11 +408,14 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
                     updated["trace"]["tts_warmup_failed"] = True
                 updated["trace"]["tts_warmup_ms"] = _elapsed_ms(warmup_started)
         try:
-            llm_stream: Iterable[str] = _stream_answer_text_for_mode(
-                question_text,
-                llm_references,
-                answer_mode,
-            )
+            if identity_answer:
+                llm_stream: Iterable[str] = iter([identity_answer])
+            else:
+                llm_stream = _stream_answer_text_for_mode(
+                    question_text,
+                    llm_references,
+                    answer_mode,
+                )
         except Exception as exc:
             store.mark_failed(session_id, "llm_request_failed", str(exc) or "LLM failed")
             store.fail_audio(session_id, "llm_request_failed")

@@ -799,13 +799,116 @@ class RealtimeSchemaTests(unittest.TestCase):
         self.assertEqual(updated["final_reason"], "failed")
         self.assertEqual(updated["error_code"], "asr_empty_text")
 
-    def test_realtime_session_marks_reject_when_retrieval_below_threshold(self) -> None:
+    def test_realtime_session_answers_identity_question_as_coffee_robot(self) -> None:
         from src.services import realtime_session as realtime_session_service
         from src.storage.realtime_store import InMemoryRealtimeSessionStore
         from src.providers.asr import ASRResult
 
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1", input_wav_path="/tmp/test.wav")
+        observed_segments: list[str] = []
+
+        def _stream_realtime_tts_chunks(text_chunks, **_kwargs):
+            observed_segments.extend(list(text_chunks))
+            return iter([b"\x01\x00\x02\x00"])
+
+        with mock.patch.object(
+            realtime_session_service,
+            "transcribe_wav_result",
+            return_value=ASRResult("你是谁", None, None),
+        ), mock.patch.object(
+            realtime_session_service,
+            "retrieve_references",
+            return_value=([], 0.0),
+        ), mock.patch.object(
+            realtime_session_service,
+            "is_coffee_question",
+            return_value=False,
+        ), mock.patch.object(
+            realtime_session_service.settings,
+            "realtime_tts_warmup_enabled",
+            False,
+        ), mock.patch.object(
+            realtime_session_service,
+            "stream_answer_text",
+        ) as stream_answer_text, mock.patch.object(
+            realtime_session_service,
+            "realtime_tts_health",
+            return_value=True,
+        ), mock.patch.object(
+            realtime_session_service,
+            "stream_realtime_tts_chunks",
+            side_effect=_stream_realtime_tts_chunks,
+        ):
+            realtime_session_service.run_stub_realtime_session(store, session["session_id"])
+
+        updated = store.get_session(session["session_id"])
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["final_reason"], "completed_answer")
+        self.assertIn("小机仔", updated["answer_text"])
+        self.assertIn("咖啡小机器人", updated["answer_text"])
+        self.assertEqual("".join(observed_segments), updated["answer_text"])
+        stream_answer_text.assert_not_called()
+
+    def test_realtime_session_uses_llm_for_understood_question_without_references(self) -> None:
+        from src.services import realtime_session as realtime_session_service
+        from src.storage.realtime_store import InMemoryRealtimeSessionStore
+        from src.providers.asr import ASRResult
+
+        wav_path = _write_test_wav(b"\x01\x00\x02\x00")
+        store = InMemoryRealtimeSessionStore(base_url="http://testserver")
+        session = store.create_session(device_id="esp-1", input_wav_path="/tmp/test.wav")
+        answer_text = "我没有实时天气信息，但我是咖啡小机器人，可以先陪你聊一杯适合今天的咖啡。"
+
+        try:
+            with mock.patch.object(
+                realtime_session_service,
+                "transcribe_wav_result",
+                return_value=ASRResult("今天天气怎么样", None, None),
+            ), mock.patch.object(
+                realtime_session_service,
+                "retrieve_references",
+                return_value=([], 0.0),
+            ), mock.patch.object(
+                realtime_session_service,
+                "is_coffee_question",
+                return_value=False,
+            ), mock.patch.object(
+                realtime_session_service,
+                "stream_answer_text",
+                return_value=iter([answer_text]),
+            ) as stream_answer_text, mock.patch.object(
+                realtime_session_service,
+                "realtime_tts_health",
+                return_value=False,
+            ), mock.patch.object(
+                realtime_session_service,
+                "synthesize_audio",
+                return_value=(wav_path, None),
+            ):
+                realtime_session_service.run_stub_realtime_session(store, session["session_id"])
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
+
+        updated = store.get_session(session["session_id"])
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["final_reason"], "completed_answer")
+        self.assertEqual(updated["answer_text"], answer_text)
+        stream_answer_text.assert_called_once_with("今天天气怎么样", [])
+
+    def test_realtime_session_answers_when_retrieval_below_threshold(self) -> None:
+        from src.services import realtime_session as realtime_session_service
+        from src.storage.realtime_store import InMemoryRealtimeSessionStore
+        from src.providers.asr import ASRResult
+
+        store = InMemoryRealtimeSessionStore(base_url="http://testserver")
+        session = store.create_session(device_id="esp-1", input_wav_path="/tmp/test.wav")
+        answer_text = "偏酸可能和萃取不足有关，可以磨细一点或提高水温试试。"
+        observed_segments: list[str] = []
+
+        def _stream_realtime_tts_chunks(text_chunks, **_kwargs):
+            observed_segments.extend(list(text_chunks))
+            return iter([b"\x01\x00\x02\x00"])
 
         with mock.patch.object(
             realtime_session_service,
@@ -820,22 +923,32 @@ class RealtimeSchemaTests(unittest.TestCase):
             "is_coffee_question",
             return_value=True,
         ), mock.patch.object(
+            realtime_session_service.settings,
+            "realtime_tts_warmup_enabled",
+            False,
+        ), mock.patch.object(
+            realtime_session_service,
+            "stream_answer_text",
+            return_value=iter([answer_text]),
+        ), mock.patch.object(
             realtime_session_service,
             "realtime_tts_health",
             return_value=True,
         ), mock.patch.object(
             realtime_session_service,
             "stream_realtime_tts_chunks",
-            return_value=iter([b"\x01\x00\x02\x00"]),
+            side_effect=_stream_realtime_tts_chunks,
         ):
             realtime_session_service.run_stub_realtime_session(store, session["session_id"])
 
         updated = store.get_session(session["session_id"])
         self.assertEqual(updated["status"], "done")
-        self.assertEqual(updated["final_reason"], "completed_reject")
-        self.assertEqual(updated["answer_text"], "我还没听清，可以再问我一个咖啡问题吗？")
+        self.assertEqual(updated["final_reason"], "completed_answer")
+        self.assertEqual(updated["answer_text"], answer_text)
+        self.assertEqual("".join(observed_segments), answer_text)
+        self.assertFalse(updated["trace"]["retrieval_passed_threshold"])
 
-    def test_realtime_session_reject_streams_audible_retry_prompt(self) -> None:
+    def test_realtime_session_understood_noncoffee_question_streams_llm_answer(self) -> None:
         from src.services import realtime_session as realtime_session_service
         from src.storage.realtime_store import InMemoryRealtimeSessionStore
         from src.providers.asr import ASRResult
@@ -843,8 +956,9 @@ class RealtimeSchemaTests(unittest.TestCase):
         store = InMemoryRealtimeSessionStore(base_url="http://testserver")
         session = store.create_session(device_id="esp-1", input_wav_path="/tmp/test.wav")
         observed_segments: list[str] = []
+        answer_text = "这个我不太确定，不过我是咖啡小机器人，可以先陪你聊咖啡。"
 
-        def _stream_realtime_tts_chunks(text_chunks):
+        def _stream_realtime_tts_chunks(text_chunks, **_kwargs):
             observed_segments.extend(list(text_chunks))
             return iter([b"\x10\x00\x20\x00", b"\x30\x00\x40\x00"])
 
@@ -861,6 +975,14 @@ class RealtimeSchemaTests(unittest.TestCase):
             "is_coffee_question",
             return_value=False,
         ), mock.patch.object(
+            realtime_session_service.settings,
+            "realtime_tts_warmup_enabled",
+            False,
+        ), mock.patch.object(
+            realtime_session_service,
+            "stream_answer_text",
+            return_value=iter([answer_text]),
+        ), mock.patch.object(
             realtime_session_service,
             "realtime_tts_health",
             return_value=True,
@@ -873,9 +995,9 @@ class RealtimeSchemaTests(unittest.TestCase):
 
         updated = store.get_session(session["session_id"])
         self.assertEqual(updated["status"], "done")
-        self.assertEqual(updated["final_reason"], "completed_reject")
+        self.assertEqual(updated["final_reason"], "completed_answer")
         stream_realtime_tts_chunks.assert_called_once()
-        self.assertEqual(observed_segments, [realtime_session_service.COFFEE_RETRY_TEXT])
+        self.assertEqual("".join(observed_segments), answer_text)
         self.assertEqual(
             list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
             [b"\x10\x00\x20\x00", b"\x30\x00\x40\x00"],

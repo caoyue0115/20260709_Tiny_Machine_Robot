@@ -72,6 +72,10 @@ class RealtimeTrace(BaseModel):
     packets_received: int | None = None
     answer_mode: str | None = None
     retrieval_top_score: float | None = None
+    retrieval_threshold: float | None = None
+    retrieval_passed_threshold: bool | None = None
+    is_coffee_question: bool | None = None
+    identity_answer: bool | None = None
     stream_to_session_start_abs_ms: int | None = None
     server_stream_accept_abs_ms: int | None = None
     first_frame_server_abs_ms: int | None = None

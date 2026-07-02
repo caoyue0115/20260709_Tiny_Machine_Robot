@@ -6,6 +6,7 @@ from tests._stubs import install_dependency_stubs
 
 install_dependency_stubs()
 
+from src.domain import coffee
 from src.domain.coffee import COFFEE_RETRY_TEXT as DOMAIN_COFFEE_RETRY_TEXT
 from src.services import realtime_session
 
@@ -59,3 +60,10 @@ def test_coffee_asr_normalization_recovers_missing_coffee_for_acid_cup() -> None
 
     assert normalized == "\u5496\u5561\u662f\u9178\u7684\u3002"
     assert rules == ["\u676f\u662f\u9178\u7684->\u5496\u5561\u662f\u9178\u7684"]
+
+
+def test_identity_questions_have_direct_coffee_robot_answer() -> None:
+    assert coffee.answer_identity_question("你是谁") == coffee.COFFEE_IDENTITY_TEXT
+    assert coffee.answer_identity_question("你叫什么名字？") == coffee.COFFEE_IDENTITY_TEXT
+    assert "咖啡小机器人" in coffee.COFFEE_IDENTITY_TEXT
+    assert coffee.answer_identity_question("手冲咖啡为什么会偏酸") is None
