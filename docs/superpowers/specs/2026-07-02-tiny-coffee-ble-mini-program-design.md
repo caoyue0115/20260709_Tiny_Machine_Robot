@@ -175,7 +175,7 @@ BLE security:
 - Store the production PIN or provisioning secret in device NVS during manufacturing. The mini program asks the user for the printed PIN or scans a package QR payload.
 - Use a nonce-based challenge response before sending Wi-Fi credentials: the device sends a provisioning nonce, the mini program sends a PIN-derived proof for `device_id + nonce`, and the device accepts credentials only after proof verification.
 - Development builds may temporarily disable PIN verification only for lab BluFi spike work. This mode must be visibly labeled as lab-only and must fail production guard checks.
-- Rate-limit failed PIN attempts and keep the device in a retryable provisioning state.
+- Rate-limit failed PIN attempts and Wi-Fi credential failures using the provisioning retry rules below.
 - Wi-Fi password must never be logged by firmware, mini program, or backend.
 
 Provisioning state machine:
@@ -188,6 +188,19 @@ Provisioning state machine:
 - GPIO7 long press during an active conversation: ignore the reprovision request until the conversation finishes; do not interrupt a live audio session unexpectedly.
 - BLE provisioning active: realtime Opus capture/playback is paused and any active realtime WebSocket is closed before BLE starts.
 - BLE provisioning success: save Wi-Fi credentials, reconnect Wi-Fi, report device identity to the mini program, then return to normal mode.
+
+Provisioning retry rules:
+
+- Each BLE provisioning window lasts 10 minutes from advertising start.
+- If provisioning does not succeed within 10 minutes, firmware disconnects any BLE client, stops BLE advertising, and enters provisioning timeout idle state.
+- In provisioning timeout idle state, pressing GPIO7 restarts a new 10-minute BLE provisioning window. Power cycling the device also starts a new window when no valid Wi-Fi credentials exist.
+- On successful provisioning, firmware immediately stops BLE advertising and disconnects the provisioning BLE session before returning to normal mode.
+- Wrong Wi-Fi password, Wi-Fi join failure, and PIN verification failure increment the same in-memory failure counter for the current provisioning window.
+- The first five failures in a provisioning window are retryable without cooldown.
+- Starting with the sixth failure, firmware enforces exponential cooldown before accepting another PIN proof or Wi-Fi credential attempt: 30 seconds, 60 seconds, 120 seconds, then 240 seconds, capped at 300 seconds for later failures.
+- After 10 consecutive failures in one provisioning window, firmware ends the window early, stops BLE advertising, and requires GPIO7 or power cycle to start a new provisioning window.
+- The mini program displays the cooldown countdown when firmware reports `PROVISIONING_COOLDOWN`.
+- The failure counter resets after successful provisioning or when a new provisioning window starts.
 
 Firmware responsibilities:
 
@@ -203,7 +216,7 @@ Firmware must not break the realtime Opus audio path, wake-word path, or current
 
 ## Settings Synchronization
 
-The server is the source of truth for settings. Each settings row starts at `settings_revision = 1` when the device is first bound or its default settings are created. Every accepted mini program settings write increments the revision by 1.
+The server is the source of truth for settings when it returns a monotonic settings snapshot. Each settings row starts at `settings_revision = 1` when the device is first bound or its default settings are created. Every accepted mini program settings write increments the revision by 1. A server response with a lower revision than the firmware cache is treated as a stale cache or routing fault, not as an instruction to roll back.
 
 Firmware state:
 
@@ -221,7 +234,8 @@ Fetch and apply rules:
 - If a response has `settings_revision > current_revision` and no conversation is active, firmware applies it immediately, persists it, and updates `current_revision`.
 - If a response has `settings_revision > current_revision` while a conversation is active, firmware stores it as `pending_settings` and applies it after the conversation finishes.
 - If a response has `settings_revision == current_revision`, firmware ignores it.
-- If a response has `settings_revision < current_revision`, firmware treats the server as authoritative, logs a warning, applies the server snapshot at the next safe boundary, persists it, and sets `current_revision` to the server value.
+- If a response has `settings_revision < current_revision`, firmware treats it as stale or inconsistent data, logs a warning, ignores the snapshot, keeps the current settings, and schedules an extra settings pull with backoff.
+- If three consecutive settings pulls return `settings_revision < current_revision`, firmware keeps the current settings and reports `settings_revision_stale` telemetry on the next successful cloud request.
 - Volume, voice, nickname, and avatar changes never mutate `session_settings` after ASR has started. Volume changes and voice changes both take effect no earlier than the next conversation once a session is active.
 
 Settings API behavior:
@@ -282,10 +296,12 @@ The mini program must present explicit states for:
 - Avatar upload failed.
 - Device settings save failed.
 - Device already bound by another user.
+- Provisioning cooldown active after repeated PIN or Wi-Fi failures.
+- Provisioning window expired and requires pressing GPIO7 to retry.
 
-The firmware must report provisioning success, Wi-Fi failure, and timeout states over BLE. If provisioning fails, the device remains discoverable long enough for the user to retry from the mini program.
+The firmware must report provisioning success, Wi-Fi failure, cooldown, and timeout states over BLE. Failed provisioning remains retryable within the active 10-minute window unless cooldown or max-failure rules apply.
 
-Backend errors use stable machine-readable codes in addition to human text. Required codes include `DEVICE_ALREADY_BOUND`, `DEVICE_NOT_BOUND`, `AVATAR_UPLOAD_FAILED`, and `PROVISIONING_BIND_EXPIRED`.
+Backend errors use stable machine-readable codes in addition to human text. Required codes include `DEVICE_ALREADY_BOUND`, `DEVICE_NOT_BOUND`, and `AVATAR_UPLOAD_FAILED`.
 
 ## Open Source Reuse
 
@@ -328,6 +344,8 @@ Acceptance criteria:
 - Firmware persists `current_revision` to NVS and handles `>`, `==`, and `<` revision responses exactly as specified.
 - `/api/wx/v1/login` returns a 7-day JWT and subsequent mini program API calls use `Authorization: Bearer`.
 - Production builds require printed/stored pairing PIN verification; lab-only no-PIN mode cannot pass production guard checks.
+- BLE provisioning stops advertising after success or after a 10-minute timeout.
+- PIN and Wi-Fi failures share the specified cooldown and max-failure behavior.
 - Existing realtime Opus conversations continue to work.
 - Wake word and GPIO controls continue to work.
 
@@ -338,7 +356,8 @@ Recommended verification:
 - Firmware guard tests for BLE provisioning compile flags and SoftAP exclusion from the mini program path.
 - Firmware tests or log assertions that GPIO7 short press remains voice/wake and GPIO7 long press enters BLE provisioning only while idle.
 - Backend tests for login token issuance, duplicate binding, already-bound errors, settings revision increments, last-write-wins settings writes, and `api_version`.
-- Firmware tests or log assertions for settings revision ordering, pending apply during active conversations, NVS revision persistence, and server-authoritative rollback handling.
+- Firmware tests or log assertions for settings revision ordering, pending apply during active conversations, stale lower-revision rejection, stale-revision telemetry after three repeats, and NVS revision persistence.
+- Firmware tests or log assertions for provisioning 10-minute timeout, BLE advertising stop on success, cooldown after repeated failures, and max-failure session stop.
 - Manual BLE provisioning test on COM6 hardware.
 - Manual mini program test on at least one Android phone and one iPhone before public use.
 
