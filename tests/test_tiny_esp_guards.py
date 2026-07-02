@@ -20,7 +20,7 @@ def test_firmware_keeps_xiaoming_wake_word_and_volcengine_asr_default() -> None:
 def test_ota_is_inactive_by_default() -> None:
     config = (ROOT / "esp_idf_demo" / "main" / "config.h").read_text(encoding="utf-8")
 
-    _assert_guarded_define(config, "DEMO_OTA_MANIFEST_DRY_RUN_ENABLED", "1")
+    _assert_guarded_define(config, "DEMO_OTA_MANIFEST_DRY_RUN_ENABLED", "0")
     _assert_guarded_define(config, "DEMO_OTA_PARTITION_WRITE_ENABLED", "0")
     _assert_guarded_define(config, "DEMO_OTA_BOOT_SWITCH_ENABLED", "0")
     _assert_guarded_define(config, "DEMO_OTA_ROLLBACK_VALIDATION_ENABLED", "0")

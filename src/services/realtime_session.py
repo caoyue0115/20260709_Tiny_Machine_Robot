@@ -36,6 +36,7 @@ _ASR_NORMALIZATION_RULES: tuple[tuple[str, str], ...] = (
     ("手冲加啡", "手冲咖啡"),
     ("咖非", "咖啡"),
     ("格夏", "瑰夏"),
+    ("\u676f\u662f\u9178\u7684", "\u5496\u5561\u662f\u9178\u7684"),
 )
 logger = logging.getLogger(__name__)
 
@@ -462,14 +463,74 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
         trace=updated["trace"],
     )
     if is_reject:
-        _record_first_audio_trace(updated["trace"], overall_started, stream_to_session_start_abs_ms)
-        store.update_session(session_id, step="streaming", trace=updated["trace"])
-        store.update_session(
-            session_id,
-            trace=updated["trace"],
-            final_reason="completed_reject" if is_reject else "completed_answer",
-        )
-        store.append_audio_chunk(session_id, b"\x01\x02\x03\x04")
+        started_streaming = False
+        audio_stream_started_at: float | None = None
+        audio_last_chunk_at: float | None = None
+        audio_bytes = 0
+        audio_chunk_count = 0
+        audio_max_chunk_gap_ms = 0
+        try:
+            for chunk in _stream_answer_audio([], answer_text):
+                if not chunk:
+                    continue
+                now = time.perf_counter()
+                if audio_stream_started_at is None:
+                    audio_stream_started_at = now
+                if audio_last_chunk_at is not None:
+                    audio_max_chunk_gap_ms = max(
+                        audio_max_chunk_gap_ms,
+                        _elapsed_ms(audio_last_chunk_at, now),
+                    )
+                audio_last_chunk_at = now
+                audio_chunk_count += 1
+                audio_bytes += len(chunk)
+                _record_audio_chunk_trace(
+                    updated["trace"],
+                    audio_chunk_count,
+                    audio_bytes,
+                    audio_max_chunk_gap_ms,
+                )
+                if not started_streaming:
+                    _record_first_audio_trace(updated["trace"], overall_started, stream_to_session_start_abs_ms)
+                    store.update_session(session_id, step="streaming", trace=updated["trace"])
+                    store.update_session(
+                        session_id,
+                        trace=updated["trace"],
+                        final_reason="completed_reject",
+                    )
+                    started_streaming = True
+                store.append_audio_chunk(session_id, chunk)
+        except RealtimeTtsError as exc:
+            store.mark_failed(session_id, exc.code, exc.message)
+            store.fail_audio(session_id, exc.code)
+            return
+        except ValueError as exc:
+            error_code = str(exc)
+            store.mark_failed(session_id, error_code, error_code)
+            store.fail_audio(session_id, error_code)
+            return
+        if not started_streaming:
+            store.mark_failed(session_id, "tts_empty_audio", "tts_empty_audio")
+            store.fail_audio(session_id, "tts_empty_audio")
+            return
+        if audio_stream_started_at is not None and audio_last_chunk_at is not None:
+            audio_stream_wall_ms = _elapsed_ms(audio_stream_started_at, audio_last_chunk_at)
+            updated["trace"]["audio_stream_wall_ms"] = audio_stream_wall_ms
+            updated["trace"]["audio_duration_ms"] = _pcm_duration_ms(audio_bytes)
+            updated["trace"]["production_ratio"] = (
+                round(updated["trace"]["audio_duration_ms"] / audio_stream_wall_ms, 3)
+                if audio_stream_wall_ms > 0
+                else None
+            )
+        _set_trace_default(updated["trace"], "llm_chunk_count", 0)
+        _set_trace_default(updated["trace"], "tts_segment_count", 1)
+        _set_trace_default(updated["trace"], "segment_ready_ms", [0])
+        _set_trace_default(updated["trace"], "audio_chunk_count", audio_chunk_count)
+        _set_trace_default(updated["trace"], "tts_chunk_count", audio_chunk_count)
+        _set_trace_default(updated["trace"], "audio_bytes", audio_bytes)
+        _set_trace_default(updated["trace"], "tts_total_audio_bytes", audio_bytes)
+        _set_trace_default(updated["trace"], "audio_max_chunk_gap_ms", audio_max_chunk_gap_ms)
+        store.update_session(session_id, trace=updated["trace"])
     else:
         started_streaming = False
         audio_stream_started_at: float | None = None

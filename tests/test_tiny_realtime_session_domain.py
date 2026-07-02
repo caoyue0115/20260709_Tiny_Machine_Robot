@@ -52,3 +52,10 @@ def test_coffee_asr_normalization_chains_order_dependent_rules() -> None:
 def test_reject_prompt_is_coffee_specific() -> None:
     assert realtime_session.COFFEE_RETRY_TEXT == "我还没听清，可以再问我一个咖啡问题吗？"
     assert DOMAIN_COFFEE_RETRY_TEXT == realtime_session.COFFEE_RETRY_TEXT
+
+
+def test_coffee_asr_normalization_recovers_missing_coffee_for_acid_cup() -> None:
+    normalized, rules = realtime_session.normalize_coffee_asr_text("\u676f\u662f\u9178\u7684\u3002")
+
+    assert normalized == "\u5496\u5561\u662f\u9178\u7684\u3002"
+    assert rules == ["\u676f\u662f\u9178\u7684->\u5496\u5561\u662f\u9178\u7684"]
