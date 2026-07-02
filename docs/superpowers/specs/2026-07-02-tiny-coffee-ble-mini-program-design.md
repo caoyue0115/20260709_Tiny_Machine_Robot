@@ -190,14 +190,22 @@ Provisioning state machine:
 - GPIO7 long press for 5 seconds while idle: stop realtime capture/playback, clear saved Wi-Fi credentials, clear local binding token if present, reboot into BLE provisioning.
 - GPIO7 long press during an active conversation: ignore the reprovision request until the conversation finishes; do not interrupt a live audio session unexpectedly.
 - BLE provisioning active: realtime Opus capture/playback is paused and any active realtime WebSocket is closed before BLE starts.
-- BLE provisioning success: save Wi-Fi credentials, reconnect Wi-Fi, report device identity to the mini program, then return to normal mode.
+- BLE provisioning success: save Wi-Fi credentials, reconnect Wi-Fi, send a `PROVISIONING_SUCCESS` BLE notify that includes device identity and firmware version, stop BLE advertising, keep the current BLE connection open, and wait for the mini program to close the BLE connection.
+
+Successful provisioning close handshake:
+
+- Firmware does not actively disconnect the BLE connection on the success path.
+- The mini program treats `PROVISIONING_SUCCESS` as a terminal success state, immediately updates the UI to success or binding progress, sets a local `expectedDisconnect` flag, and calls `wx.closeBLEConnection()`.
+- When `onBLEConnectionStateChange` reports `connected: false` while `expectedDisconnect` is set or a terminal success state has been reached, the mini program suppresses the generic "Bluetooth disconnected" error UI.
+- If the BLE connection drops before `PROVISIONING_SUCCESS`, the mini program shows a retryable connection-lost error.
+- Firmware may actively disconnect BLE on failure, timeout, cooldown, or max-failure paths. Those disconnects are not marked as expected by the mini program unless an explicit terminal success was received.
 
 Provisioning retry rules:
 
 - Each BLE provisioning window lasts 10 minutes from advertising start.
 - If provisioning does not succeed within 10 minutes, firmware disconnects any BLE client, stops BLE advertising, and enters provisioning timeout idle state.
 - In provisioning timeout idle state, pressing GPIO7 restarts a new 10-minute BLE provisioning window. Power cycling the device also starts a new window when no valid Wi-Fi credentials exist.
-- On successful provisioning, firmware immediately stops BLE advertising and disconnects the provisioning BLE session before returning to normal mode.
+- On successful provisioning, firmware immediately stops BLE advertising but does not actively disconnect the provisioning BLE session. The mini program closes the BLE connection after receiving `PROVISIONING_SUCCESS`.
 - Wrong Wi-Fi password, Wi-Fi join failure, and PIN verification failure increment the same in-memory failure counter for the current provisioning window.
 - The first five failures in a provisioning window are retryable without cooldown.
 - Starting with the sixth failure, firmware enforces exponential cooldown before accepting another PIN proof or Wi-Fi credential attempt: 30 seconds, 60 seconds, 120 seconds, then 240 seconds, capped at 300 seconds for later failures.
@@ -352,6 +360,7 @@ Acceptance criteria:
 - Production builds require printed/stored pairing PIN verification; lab-only no-PIN mode cannot pass production guard checks.
 - Missing `pairing_pin` falls back to `0000` only with `pairing_pin_missing_using_0000` warning, and production test fails on that warning.
 - BLE provisioning stops advertising after success or after a 10-minute timeout.
+- Successful provisioning does not display a transient "Bluetooth disconnected" error in the mini program; the success notification is processed before the client closes BLE.
 - PIN and Wi-Fi failures share the specified cooldown and max-failure behavior.
 - Existing realtime Opus conversations continue to work.
 - Wake word and GPIO controls continue to work.
@@ -366,6 +375,7 @@ Recommended verification:
 - Firmware tests or log assertions for settings revision ordering, pending apply during active conversations, stale lower-revision rejection, degraded 5-minute polling after three stale responses, degraded-mode reset on reboot or valid revision, stale-revision telemetry after three repeats, and NVS revision persistence.
 - Factory/provisioning tests for NVS `pairing_pin` write, missing-PIN fallback warning, and production-test failure on `pairing_pin_missing_using_0000`.
 - Firmware tests or log assertions for provisioning 10-minute timeout, BLE advertising stop on success, cooldown after repeated failures, and max-failure session stop.
+- Mini program tests or manual QA for the success close handshake: `PROVISIONING_SUCCESS` updates UI first, `wx.closeBLEConnection()` is called by the client, and the expected disconnect callback is not shown as an error.
 - Manual BLE provisioning test on COM6 hardware.
 - Manual mini program test on at least one Android phone and one iPhone before public use.
 
