@@ -60,3 +60,15 @@ def test_realtime_downlink_queue_timeout_allows_playback_backpressure() -> None:
     prebuffer_ms = jitter_prebuffer_bytes * 1000 // byte_rate
 
     assert queue_timeout_ms >= prebuffer_ms * 4
+
+
+def test_waiting_speech_vad_threshold_ignores_observed_silence_noise() -> None:
+    config = (ROOT / "esp_idf_demo" / "main" / "config.h").read_text(encoding="utf-8")
+    audio_in = (ROOT / "esp_idf_demo" / "main" / "audio_in.c").read_text(encoding="utf-8")
+
+    waiting_threshold = _guarded_define_int(config, "DEMO_WAITING_SPEECH_START_THRESHOLD")
+    record_threshold = _guarded_define_int(config, "DEMO_RECORD_VAD_START_THRESHOLD")
+
+    assert waiting_threshold >= 800
+    assert record_threshold == 450
+    assert "chunk_level >= DEMO_WAITING_SPEECH_START_THRESHOLD" in audio_in

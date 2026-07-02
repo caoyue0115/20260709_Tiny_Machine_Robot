@@ -327,7 +327,7 @@ esp_err_t audio_in_wait_for_speech_start(uint8_t **out_speech_prefix,
             armed_logged = true;
         }
 
-        if (chunk_level >= DEMO_RECORD_VAD_START_THRESHOLD) {
+        if (chunk_level >= DEMO_WAITING_SPEECH_START_THRESHOLD) {
             const size_t prefix_capacity = DEMO_SPEECH_START_HOLD_BYTES + DEMO_AUDIO_CHUNK_BYTES;
             if (prefix_bytes + DEMO_AUDIO_CHUNK_BYTES > prefix_capacity) {
                 memmove(speech_prefix,
