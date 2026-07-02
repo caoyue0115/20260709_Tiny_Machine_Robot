@@ -172,7 +172,10 @@ BLE security:
 - Do not ship a no-security BluFi mode.
 - Use BluFi security with encrypted credential transport.
 - Require a pairing PIN check before accepting Wi-Fi credentials. First-stage production must print a per-device 4-digit numeric PIN on the device body or packaging. This is a launch gate.
-- Store the production PIN or provisioning secret in device NVS during manufacturing. The mini program asks the user for the printed PIN or scans a package QR payload.
+- Store the production PIN in the default NVS partition under key `pairing_pin` as `u16` during manufacturing.
+- Factory tooling writes `pairing_pin` with `nvs_partition_gen.py` before flashing the NVS partition, or with a project-owned `esptool.py` manufacturing script that writes the generated NVS image. The implementation plan must pick one path and make it a repeatable command.
+- If `pairing_pin` is missing from NVS, firmware falls back to PIN `0000`, logs `pairing_pin_missing_using_0000`, and continues only so lab bring-up remains possible. Production test treats that log line as FAIL.
+- The mini program asks the user for the printed PIN or scans a package QR payload.
 - Use a nonce-based challenge response before sending Wi-Fi credentials: the device sends a provisioning nonce, the mini program sends a PIN-derived proof for `device_id + nonce`, and the device accepts credentials only after proof verification.
 - Development builds may temporarily disable PIN verification only for lab BluFi spike work. This mode must be visibly labeled as lab-only and must fail production guard checks.
 - Rate-limit failed PIN attempts and Wi-Fi credential failures using the provisioning retry rules below.
@@ -235,7 +238,9 @@ Fetch and apply rules:
 - If a response has `settings_revision > current_revision` while a conversation is active, firmware stores it as `pending_settings` and applies it after the conversation finishes.
 - If a response has `settings_revision == current_revision`, firmware ignores it.
 - If a response has `settings_revision < current_revision`, firmware treats it as stale or inconsistent data, logs a warning, ignores the snapshot, keeps the current settings, and schedules an extra settings pull with backoff.
-- If three consecutive settings pulls return `settings_revision < current_revision`, firmware keeps the current settings and reports `settings_revision_stale` telemetry on the next successful cloud request.
+- If three consecutive settings pulls return `settings_revision < current_revision`, firmware enters `revision_stale_degraded` mode, keeps the current settings, reports `settings_revision_stale` telemetry on the next successful cloud request, and stretches idle settings polling from 30 seconds to 5 minutes.
+- In `revision_stale_degraded` mode, pre-conversation settings pulls still run before every conversation. If they continue to return a lower revision, firmware ignores them and keeps the current settings.
+- `revision_stale_degraded` mode is cleared when firmware receives `settings_revision >= current_revision` or after device reboot.
 - Volume, voice, nickname, and avatar changes never mutate `session_settings` after ASR has started. Volume changes and voice changes both take effect no earlier than the next conversation once a session is active.
 
 Settings API behavior:
@@ -342,8 +347,10 @@ Acceptance criteria:
 - `/api/wx/v1` responses include `api_version`.
 - Unknown future fields in settings responses are ignored by firmware.
 - Firmware persists `current_revision` to NVS and handles `>`, `==`, and `<` revision responses exactly as specified.
+- After three consecutive stale lower-revision responses, firmware enters degraded mode and changes idle polling to 5 minutes while preserving pre-conversation pulls.
 - `/api/wx/v1/login` returns a 7-day JWT and subsequent mini program API calls use `Authorization: Bearer`.
 - Production builds require printed/stored pairing PIN verification; lab-only no-PIN mode cannot pass production guard checks.
+- Missing `pairing_pin` falls back to `0000` only with `pairing_pin_missing_using_0000` warning, and production test fails on that warning.
 - BLE provisioning stops advertising after success or after a 10-minute timeout.
 - PIN and Wi-Fi failures share the specified cooldown and max-failure behavior.
 - Existing realtime Opus conversations continue to work.
@@ -356,7 +363,8 @@ Recommended verification:
 - Firmware guard tests for BLE provisioning compile flags and SoftAP exclusion from the mini program path.
 - Firmware tests or log assertions that GPIO7 short press remains voice/wake and GPIO7 long press enters BLE provisioning only while idle.
 - Backend tests for login token issuance, duplicate binding, already-bound errors, settings revision increments, last-write-wins settings writes, and `api_version`.
-- Firmware tests or log assertions for settings revision ordering, pending apply during active conversations, stale lower-revision rejection, stale-revision telemetry after three repeats, and NVS revision persistence.
+- Firmware tests or log assertions for settings revision ordering, pending apply during active conversations, stale lower-revision rejection, degraded 5-minute polling after three stale responses, degraded-mode reset on reboot or valid revision, stale-revision telemetry after three repeats, and NVS revision persistence.
+- Factory/provisioning tests for NVS `pairing_pin` write, missing-PIN fallback warning, and production-test failure on `pairing_pin_missing_using_0000`.
 - Firmware tests or log assertions for provisioning 10-minute timeout, BLE advertising stop on success, cooldown after repeated failures, and max-failure session stop.
 - Manual BLE provisioning test on COM6 hardware.
 - Manual mini program test on at least one Android phone and one iPhone before public use.
