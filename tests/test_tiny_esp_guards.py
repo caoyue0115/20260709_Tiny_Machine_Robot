@@ -35,3 +35,10 @@ def test_cmake_accepts_local_string_macros_without_committing_values() -> None:
     assert "DEMO_SERVER_BASE_URL" in cmake
     assert "DEMO_DEVICE_ID" in cmake
     assert 'target_compile_definitions(${COMPONENT_LIB} PRIVATE ${name}="${${name}}")' in cmake
+
+
+def test_default_firmware_build_uses_lowcost_v1_audio_profile() -> None:
+    defaults = (ROOT / "esp_idf_demo" / "sdkconfig.defaults").read_text(encoding="utf-8")
+
+    assert "CONFIG_DEMO_TARGET_PROFILE_VOCAT_LOWCOST_16M8M=y" in defaults
+    assert "CONFIG_DEMO_AUDIO_PCB_ESP_VOCAT_V1_0=y" in defaults
