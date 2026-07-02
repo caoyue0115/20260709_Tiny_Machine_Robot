@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com"
     dashscope_tts_model: str = "qwen3-tts-vc-2026-01-22"
     tts_voice: str = ""
-    realtime_tts_model: str = "qwen3-tts-vc-realtime-2026-01-15"
+    realtime_tts_model: str = "qwen3-tts-flash-realtime-2025-11-27"
     realtime_tts_voice: str = ""
     tts_language_type: str = "Chinese"
     tts_instructions: str = "请使用明亮、亲切、有一点活泼感的中文声音，语速自然，适合咖啡小问答播报。"

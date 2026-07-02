@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from src.settings import settings
 
 
-DEFAULT_MODEL = "qwen3-tts-vc-realtime-2026-01-15"
+DEFAULT_MODEL = "qwen3-tts-flash-realtime-2025-11-27"
 
 
 def _decode_audio_delta(event: dict) -> bytes:
