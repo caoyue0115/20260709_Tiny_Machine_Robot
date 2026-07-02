@@ -53,6 +53,7 @@ def test_default_firmware_build_uses_lowcost_v1_audio_profile() -> None:
 
 def test_realtime_downlink_queue_timeout_allows_playback_backpressure() -> None:
     config = (ROOT / "esp_idf_demo" / "main" / "config.h").read_text(encoding="utf-8")
+    audio_out = (ROOT / "esp_idf_demo" / "main" / "audio_out.c").read_text(encoding="utf-8")
 
     queue_timeout_ms = _guarded_define_int(config, "DEMO_REALTIME_AUDIO_QUEUE_SEND_TIMEOUT_MS")
     jitter_prebuffer_bytes = _guarded_define_int(config, "DEMO_REALTIME_AUDIO_JITTER_PREBUFFER_BYTES")
@@ -60,6 +61,7 @@ def test_realtime_downlink_queue_timeout_allows_playback_backpressure() -> None:
     prebuffer_ms = jitter_prebuffer_bytes * 1000 // byte_rate
 
     assert queue_timeout_ms >= prebuffer_ms * 4
+    assert "pdMS_TO_TICKS(DEMO_REALTIME_AUDIO_QUEUE_SEND_TIMEOUT_MS)" in audio_out
 
 
 def test_waiting_speech_vad_threshold_ignores_observed_silence_noise() -> None:

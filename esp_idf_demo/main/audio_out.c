@@ -906,7 +906,7 @@ esp_err_t audio_out_write_pcm_chunk_buffered(const uint8_t *pcm_bytes,
     if (xRingbufferSend(s_audio_out_state.jitter_ringbuf,
                         (void *)pcm_bytes,
                         pcm_bytes_size,
-                        pdMS_TO_TICKS(DEMO_AUDIO_PLAY_WRITE_TIMEOUT_MS)) != pdTRUE) {
+                        pdMS_TO_TICKS(DEMO_REALTIME_AUDIO_QUEUE_SEND_TIMEOUT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
 
