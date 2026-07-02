@@ -5,6 +5,7 @@ COFFEE_IDENTITY_TEXT = "我是小机仔，一个咖啡小机器人，可以陪�
 
 _IDENTITY_QUESTION_TERMS = (
     "你是谁",
+    "你谁",
     "你叫什么",
     "你的名字",
     "介绍一下自己",

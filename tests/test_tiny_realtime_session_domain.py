@@ -64,6 +64,7 @@ def test_coffee_asr_normalization_recovers_missing_coffee_for_acid_cup() -> None
 
 def test_identity_questions_have_direct_coffee_robot_answer() -> None:
     assert coffee.answer_identity_question("你是谁") == coffee.COFFEE_IDENTITY_TEXT
+    assert coffee.answer_identity_question("你谁？") == coffee.COFFEE_IDENTITY_TEXT
     assert coffee.answer_identity_question("你叫什么名字？") == coffee.COFFEE_IDENTITY_TEXT
     assert "咖啡小机器人" in coffee.COFFEE_IDENTITY_TEXT
     assert coffee.answer_identity_question("手冲咖啡为什么会偏酸") is None
