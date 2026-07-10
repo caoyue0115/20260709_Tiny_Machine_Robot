@@ -483,6 +483,27 @@ async def stream_opus_realtime_session(
         else:
             error_code = provider_terminal_code
             error_message = provider_terminal_message
+        logger.warning(
+            "realtime_opus_asr_terminal_error device_id=%s error_code=%s message=%s "
+            "run_full_chain=%s asr_provider=%s asr_primary_provider=%s fallback_provider=%s "
+            "fallback_used=%s uplink_frame_count=%s uplink_opus_bytes=%s uplink_pcm_bytes=%s "
+            "reconstructed_audio_ms=%s first_pcm_to_asr_ms=%s first_asr_partial_ms=%s asr_final_ms=%s",
+            x_device_id,
+            error_code,
+            error_message,
+            run_full_chain,
+            asr_provider,
+            asr_primary_provider,
+            asr_fallback_provider,
+            asr_fallback_used,
+            expected_sequence,
+            opus_bytes,
+            len(decoded),
+            reconstructed_audio_ms,
+            first_pcm_to_asr_ms,
+            result.first_asr_partial_ms if result is not None else None,
+            result.asr_final_ms if result is not None else None,
+        )
         await websocket.send_json(
             {
                 "type": "error",
@@ -1044,6 +1065,20 @@ async def stream_opus_realtime_session(
         )
 
     await _drain_asr_start_task()
+    logger.info(
+        "realtime_opus_done device_id=%s session_started=%s question_text=%s "
+        "run_full_chain=%s asr_provider=%s uplink_frame_count=%s reconstructed_audio_ms=%s "
+        "audio_stream_url_present=%s done_abs_ms=%s",
+        x_device_id,
+        done_payload.get("session_started"),
+        done_payload.get("question_text"),
+        run_full_chain,
+        done_payload.get("asr_provider"),
+        expected_sequence,
+        reconstructed_audio_ms,
+        bool(done_payload.get("audio_stream_url")),
+        done_payload.get("done_abs_ms"),
+    )
     await websocket.send_json(_make_board_done_payload(done_payload))
     await websocket.close(code=1000)
 
