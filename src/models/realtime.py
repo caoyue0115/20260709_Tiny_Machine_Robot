@@ -8,6 +8,11 @@ from pydantic import BaseModel
 class RealtimeTrace(BaseModel):
     asr_ms: int | None = None
     retrieval_ms: int | None = None
+    skill_name: str | None = None
+    skill_route_ms: int | None = None
+    static_audio_used: bool | None = None
+    static_audio_missing: bool | None = None
+    static_audio_segment_count: int | None = None
     first_llm_chunk_ms: int | None = None
     first_tts_chunk_ms: int | None = None
     tts_first_chunk_ms: int | None = None

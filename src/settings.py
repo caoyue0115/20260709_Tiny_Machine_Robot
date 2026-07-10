@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8010"
     ota_artifact_dir: str = "./data/ota_artifacts"
     queue_name: str = "tiny_coffee_tasks"
+    enabled_skills: str = "idiom_game"
+    idiom_game_ttl_seconds: int = 900
+    idiom_game_robot_difficulty: str = "normal"
+    idiom_game_target_user_turns: int = 0
+    idiom_game_llm_judge_enabled: bool = True
+    idiom_game_llm_judge_min_confidence: float = 0.8
     max_upload_mb: int = 3
     max_audio_seconds: int = 8
     chunk_size: int = 300
@@ -71,6 +77,9 @@ class Settings(BaseSettings):
     realtime_tts_warmup_enabled: bool = True
     realtime_llm_compact_top_k: int = 1
     realtime_llm_compact_snippet_chars: int = 36
+    static_audio_enabled: bool = True
+    static_audio_dir: str = "./data/static_audio"
+    static_audio_chunk_size: int = 4096
     project_name: str = "Tiny Coffee Machine"
     version: str = "0.1.0"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -101,6 +110,13 @@ class Settings(BaseSettings):
     @property
     def output_dir(self) -> Path:
         return self.data_dir / "output"
+
+    @property
+    def static_audio_path(self) -> Path:
+        raw = Path(self.static_audio_dir)
+        if raw.is_absolute():
+            return raw
+        return (self.project_root / raw).resolve()
 
     @property
     def ota_artifact_path(self) -> Path:

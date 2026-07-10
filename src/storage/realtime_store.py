@@ -50,6 +50,11 @@ class InMemoryRealtimeSessionStore:
             "trace": {
                 "asr_ms": None,
                 "retrieval_ms": None,
+                "skill_name": None,
+                "skill_route_ms": None,
+                "static_audio_used": None,
+                "static_audio_missing": None,
+                "static_audio_segment_count": None,
                 "first_llm_chunk_ms": None,
                 "first_tts_chunk_ms": None,
                 "tts_first_chunk_ms": None,

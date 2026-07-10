@@ -17,10 +17,12 @@ from src.providers.realtime_tts import (
     stream_realtime_tts_chunks,
     warmup_realtime_tts_session,
 )
+from src.providers.static_audio import resolve_static_audio_plan, stream_static_audio_paths
 from src.providers.tts import synthesize_audio
 from src.rag.retriever import is_coffee_question, retrieve_references
 from src.settings import settings
 from src.storage.realtime_store import InMemoryRealtimeSessionStore
+from src.voice_skills.router import route_voice_skill
 
 
 ANSWER_MODE_SHORT = "short"
@@ -353,6 +355,141 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             step="retrieval",
             trace=updated["trace"],
         )
+
+    try:
+        skill_result = route_voice_skill(
+            device_id=str(updated.get("device_id") or ""),
+            text=question_text,
+            answer_mode=answer_mode,
+            trace=updated["trace"],
+        )
+    except Exception as exc:
+        store.mark_failed(session_id, "skill_route_failed", str(exc) or "Skill route failed")
+        store.fail_audio(session_id, "skill_route_failed")
+        return
+    if skill_result is not None:
+        updated["trace"].update(skill_result.trace)
+        updated["trace"]["skill_route_ms"] = 0
+        updated["trace"]["retrieval_ms"] = updated["trace"]["skill_route_ms"]
+        if stream_to_session_start_abs_ms is not None:
+            _set_abs_trace(
+                updated["trace"],
+                "retrieval_done_abs_ms",
+                stream_to_session_start_abs_ms,
+                _elapsed_ms(overall_started),
+            )
+        store.update_session(session_id, step="llm", trace=updated["trace"])
+        answer_text = str(skill_result.answer_text or "").strip()
+        if not answer_text and skill_result.answer_stream is not None:
+            try:
+                answer_text = "".join(chunk for chunk in skill_result.answer_stream if chunk).strip()
+            except Exception as exc:
+                store.mark_failed(session_id, "llm_request_failed", str(exc) or "LLM failed")
+                store.fail_audio(session_id, "llm_request_failed")
+                return
+        if not answer_text:
+            store.mark_failed(session_id, "llm_empty_text", "LLM returned empty text")
+            store.fail_audio(session_id, "llm_empty_text")
+            return
+
+        static_audio_paths = resolve_static_audio_plan(skill_result.audio_plan or []) if skill_result.audio_plan else None
+        if static_audio_paths is not None:
+            updated["trace"]["static_audio_used"] = True
+            updated["trace"]["static_audio_segment_count"] = len(static_audio_paths)
+        elif skill_result.audio_plan:
+            updated["trace"]["static_audio_used"] = False
+            updated["trace"]["static_audio_missing"] = True
+            updated["trace"]["static_audio_segment_count"] = len(skill_result.audio_plan)
+
+        store.update_session(session_id, step="tts", answer_text=answer_text, trace=updated["trace"])
+        started_streaming = False
+        audio_stream_started_at: float | None = None
+        audio_last_chunk_at: float | None = None
+        audio_bytes = 0
+        audio_chunk_count = 0
+        audio_max_chunk_gap_ms = 0
+        try:
+            if static_audio_paths is not None:
+                audio_stream = stream_static_audio_paths(static_audio_paths)
+                _set_trace_default(updated["trace"], "first_llm_chunk_ms", _elapsed_ms(overall_started))
+                _set_abs_trace(
+                    updated["trace"],
+                    "first_llm_chunk_abs_ms",
+                    stream_to_session_start_abs_ms,
+                    updated["trace"]["first_llm_chunk_ms"],
+                )
+            else:
+                audio_stream = _stream_answer_audio([], answer_text)
+            for chunk in audio_stream:
+                if not chunk:
+                    continue
+                now = time.perf_counter()
+                if audio_stream_started_at is None:
+                    audio_stream_started_at = now
+                if audio_last_chunk_at is not None:
+                    audio_max_chunk_gap_ms = max(
+                        audio_max_chunk_gap_ms,
+                        _elapsed_ms(audio_last_chunk_at, now),
+                    )
+                audio_last_chunk_at = now
+                audio_chunk_count += 1
+                audio_bytes += len(chunk)
+                _record_audio_chunk_trace(
+                    updated["trace"],
+                    audio_chunk_count,
+                    audio_bytes,
+                    audio_max_chunk_gap_ms,
+                )
+                if not started_streaming:
+                    _record_first_audio_trace(updated["trace"], overall_started, stream_to_session_start_abs_ms)
+                    store.update_session(session_id, step="streaming", trace=updated["trace"])
+                    store.update_session(session_id, trace=updated["trace"], final_reason="completed_answer")
+                    started_streaming = True
+                store.append_audio_chunk(session_id, chunk)
+        except RealtimeTtsError as exc:
+            store.mark_failed(session_id, exc.code, exc.message)
+            store.fail_audio(session_id, exc.code)
+            return
+        except ValueError as exc:
+            error_code = str(exc)
+            store.mark_failed(session_id, error_code, error_code)
+            store.fail_audio(session_id, error_code)
+            return
+        if not started_streaming:
+            store.mark_failed(session_id, "tts_empty_audio", "tts_empty_audio")
+            store.fail_audio(session_id, "tts_empty_audio")
+            return
+        if audio_stream_started_at is not None and audio_last_chunk_at is not None:
+            audio_stream_wall_ms = _elapsed_ms(audio_stream_started_at, audio_last_chunk_at)
+            updated["trace"]["audio_stream_wall_ms"] = audio_stream_wall_ms
+            updated["trace"]["audio_duration_ms"] = _pcm_duration_ms(audio_bytes)
+            updated["trace"]["production_ratio"] = (
+                round(updated["trace"]["audio_duration_ms"] / audio_stream_wall_ms, 3)
+                if audio_stream_wall_ms > 0
+                else None
+            )
+        _set_trace_default(updated["trace"], "llm_chunk_count", 0)
+        _set_trace_default(updated["trace"], "tts_segment_count", 0)
+        _set_trace_default(updated["trace"], "segment_ready_ms", [])
+        _set_trace_default(updated["trace"], "audio_chunk_count", audio_chunk_count)
+        _set_trace_default(updated["trace"], "tts_chunk_count", audio_chunk_count)
+        _set_trace_default(updated["trace"], "audio_bytes", audio_bytes)
+        _set_trace_default(updated["trace"], "tts_total_audio_bytes", audio_bytes)
+        _set_trace_default(updated["trace"], "audio_max_chunk_gap_ms", audio_max_chunk_gap_ms)
+        store.update_session(session_id, trace=updated["trace"])
+        store.finish_audio(session_id)
+        done_ms = _elapsed_ms(overall_started)
+        _set_abs_trace(updated["trace"], "done_abs_ms", stream_to_session_start_abs_ms, done_ms)
+        store.update_session(session_id, trace=updated["trace"])
+        done_session = store.mark_done(
+            session_id,
+            final_reason="completed_answer",
+            answer_text=answer_text,
+            done_ms=done_ms,
+        )
+        if done_session is not None:
+            _log_realtime_session_terminal(done_session)
+        return
 
     retrieval_started = time.perf_counter()
     try:

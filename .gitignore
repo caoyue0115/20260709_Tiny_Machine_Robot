@@ -19,6 +19,7 @@ venv/
 *.pfx
 
 # Runtime state.
+*.log
 logs/
 runtime/
 *.db
@@ -26,6 +27,8 @@ runtime/
 *.sqlite3
 data/incoming/
 data/output/
+data/static_audio/
+data/static_audio_preview/
 indices/
 
 # ESP-IDF and generated firmware artifacts.
