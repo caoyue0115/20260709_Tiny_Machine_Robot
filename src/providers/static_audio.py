@@ -33,6 +33,19 @@ def stream_static_audio_paths(paths: Iterable[Path], chunk_size: int | None = No
         yield from _iter_audio_file(path, chunk_size=size)
 
 
+def merge_static_audio_paths(paths: Iterable[Path]) -> bytes:
+    merged = bytearray()
+    for path in paths:
+        merged.extend(_read_audio_file(path))
+    return bytes(merged)
+
+
+def chunk_pcm_audio(pcm: bytes, chunk_size: int | None = None) -> Iterator[bytes]:
+    size = max(1, int(chunk_size or settings.static_audio_chunk_size))
+    for offset in range(0, len(pcm), size):
+        yield pcm[offset : offset + size]
+
+
 def _resolve_segment_path(segment_id: str, base: Path) -> Path | None:
     if not segment_id:
         return None
@@ -50,6 +63,16 @@ def _resolve_segment_path(segment_id: str, base: Path) -> Path | None:
         if candidate.is_file() and candidate.is_relative_to(base):
             return candidate
     return None
+
+
+def _read_audio_file(path: Path) -> bytes:
+    suffix = path.suffix.lower()
+    if suffix == ".pcm":
+        return path.read_bytes()
+    if suffix == ".wav":
+        with wave.open(str(path), "rb") as reader:
+            return reader.readframes(reader.getnframes())
+    raise StaticAudioError(f"static_audio_unsupported_format:{suffix}")
 
 
 def _iter_audio_file(path: Path, *, chunk_size: int) -> Iterator[bytes]:
@@ -71,4 +94,3 @@ def _iter_audio_file(path: Path, *, chunk_size: int) -> Iterator[bytes]:
                 yield frames
         return
     raise StaticAudioError(f"static_audio_unsupported_format:{suffix}")
-

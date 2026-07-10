@@ -16,7 +16,22 @@ from src.voice_skills.idiom_game import (
 
 
 _START_IDIOM_GAME_PHRASES = ("开始成语接龙", "玩成语接龙", "来成语接龙", "成语接龙")
-_EXIT_IDIOM_GAME_PHRASES = ("退出", "结束", "不玩了", "退出游戏", "结束游戏")
+_EXIT_IDIOM_GAME_PHRASES = (
+    "退出",
+    "推出",
+    "结束",
+    "不玩了",
+    "不想玩了",
+    "我不玩了",
+    "退出游戏",
+    "推出游戏",
+    "结束游戏",
+    "退出成语接龙",
+    "推出成语接龙",
+    "结束成语接龙",
+    "退出接龙",
+    "结束接龙",
+)
 
 
 @dataclass

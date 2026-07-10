@@ -17,7 +17,7 @@ from src.providers.realtime_tts import (
     stream_realtime_tts_chunks,
     warmup_realtime_tts_session,
 )
-from src.providers.static_audio import resolve_static_audio_plan, stream_static_audio_paths
+from src.providers.static_audio import chunk_pcm_audio, merge_static_audio_paths, resolve_static_audio_plan
 from src.providers.tts import synthesize_audio
 from src.rag.retriever import is_coffee_question, retrieve_references
 from src.settings import settings
@@ -410,7 +410,10 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
         audio_max_chunk_gap_ms = 0
         try:
             if static_audio_paths is not None:
-                audio_stream = stream_static_audio_paths(static_audio_paths)
+                merged_static_audio = merge_static_audio_paths(static_audio_paths)
+                updated["trace"]["static_audio_merge_mode"] = "merged_pcm"
+                updated["trace"]["static_audio_merged_bytes"] = len(merged_static_audio)
+                audio_stream = chunk_pcm_audio(merged_static_audio)
                 _set_trace_default(updated["trace"], "first_llm_chunk_ms", _elapsed_ms(overall_started))
                 _set_abs_trace(
                     updated["trace"],

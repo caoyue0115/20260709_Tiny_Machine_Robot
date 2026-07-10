@@ -52,6 +52,28 @@ class VoiceSkillRouterTests(unittest.TestCase):
         self.assertIsNotNone(result.audio_plan)
         self.assertGreaterEqual(len(result.audio_plan or []), 4)
 
+    def test_router_exits_active_idiom_game_for_multinet_exit_phrases(self) -> None:
+        from src.voice_skills.idiom_game import IdiomGameSkill, InMemoryIdiomGameStore, load_default_idioms
+        from src.voice_skills.router import SkillRouter
+
+        for phrase in ("退出游戏", "退出成语接龙", "结束成语接龙", "我不玩了", "推出游戏"):
+            with self.subTest(phrase=phrase):
+                store = InMemoryIdiomGameStore()
+                router = SkillRouter(
+                    idiom_skill=IdiomGameSkill(load_default_idioms(), store=store),
+                    enabled_skills="idiom_game",
+                )
+                router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+                result = router.route(device_id="esp-1", text=phrase, answer_mode="short", trace={})
+
+                self.assertIsNotNone(result)
+                assert result is not None
+                self.assertEqual(result.skill_name, "idiom_game")
+                self.assertTrue(result.end_skill_state)
+                self.assertIn("这局先到这里", result.answer_text or "")
+                self.assertFalse(store.is_active("esp-1"))
+
 
 class RealtimeSkillIntegrationTests(unittest.TestCase):
     def test_realtime_session_keeps_coffee_rag_when_no_skill_matches(self) -> None:
@@ -152,9 +174,20 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
         self.assertEqual(updated["trace"]["static_audio_segment_count"], len(audio_plan))
         self.assertEqual(
             list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
-            [b"\x01\x00\x02\x00", b"\x02\x00\x03\x00", b"\x03\x00\x04\x00", b"\x04\x00\x05\x00"],
+            [b"\x01\x00\x02\x00\x02\x00\x03\x00\x03\x00\x04\x00\x04\x00\x05\x00"],
         )
         stream_realtime_tts_chunks.assert_not_called()
+
+    def test_static_audio_paths_are_merged_before_session_audio_queue(self) -> None:
+        from src.providers.static_audio import merge_static_audio_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "first.wav"
+            second = Path(tmp) / "second.wav"
+            _write_wav(first, pcm=b"\x01\x00\x02\x00")
+            _write_wav(second, pcm=b"\x03\x00\x04\x00")
+
+            self.assertEqual(merge_static_audio_paths([first, second]), b"\x01\x00\x02\x00\x03\x00\x04\x00")
 
     def test_static_audio_chunk_size_default_is_large_enough_for_board_streaming(self) -> None:
         from src.settings import Settings

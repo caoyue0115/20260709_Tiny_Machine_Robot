@@ -13,6 +13,8 @@ class RealtimeTrace(BaseModel):
     static_audio_used: bool | None = None
     static_audio_missing: bool | None = None
     static_audio_segment_count: int | None = None
+    static_audio_merge_mode: str | None = None
+    static_audio_merged_bytes: int | None = None
     first_llm_chunk_ms: int | None = None
     first_tts_chunk_ms: int | None = None
     tts_first_chunk_ms: int | None = None

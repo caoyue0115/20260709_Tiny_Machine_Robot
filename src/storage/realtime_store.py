@@ -55,6 +55,8 @@ class InMemoryRealtimeSessionStore:
                 "static_audio_used": None,
                 "static_audio_missing": None,
                 "static_audio_segment_count": None,
+                "static_audio_merge_mode": None,
+                "static_audio_merged_bytes": None,
                 "first_llm_chunk_ms": None,
                 "first_tts_chunk_ms": None,
                 "tts_first_chunk_ms": None,
