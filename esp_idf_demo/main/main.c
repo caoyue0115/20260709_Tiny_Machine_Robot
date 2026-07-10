@@ -4,6 +4,7 @@
 #include "audio_in.h"
 #include "audio_out.h"
 #include "cloud_client.h"
+#include "local_command_service.h"
 
 #include "esp_err.h"
 #include "esp_app_desc.h"
@@ -27,6 +28,7 @@ static TaskHandle_t s_pipeline_task_handle = NULL;
 static TaskHandle_t s_ota_manifest_task_handle = NULL;
 static int64_t s_last_pipeline_finish_us = 0;
 static int64_t s_next_ota_manifest_check_us = 0;
+static int64_t s_local_idiom_context_until_us = 0;
 
 #define APP_OTA_P3C_NVS_NAMESPACE "ota_p3c"
 #define APP_OTA_P3C_KEY_PENDING   "pending"
@@ -36,6 +38,7 @@ static int64_t s_next_ota_manifest_check_us = 0;
 #define APP_OTA_P3C_KEY_ADDRESS   "addr"
 #define APP_OTA_P3C_KEY_SHA256    "sha"
 #define APP_OTA_P3C_KEY_LAST_STAGE "last"
+#define APP_LOCAL_COMMAND_INTERCEPT_REQUESTED ((esp_err_t)0x7201)
 
 typedef enum {
     APP_STATE_IDLE = 0,
@@ -179,6 +182,12 @@ static void app_log_runtime_config(void)
     ESP_LOGI(TAG, "  v5_uplink_frame_ms=%d", V5_OPUS_UPLINK_FRAME_MS);
     ESP_LOGI(TAG, "  v5_uplink_asr_provider=%s", V5_OPUS_UPLINK_ASR_PROVIDER);
     ESP_LOGI(TAG, "  v5_uplink_answer_mode=%s", V5_OPUS_UPLINK_ANSWER_MODE);
+    ESP_LOGI(TAG, "  local_command_enabled=%d", DEMO_LOCAL_COMMAND_ENABLED);
+    ESP_LOGI(TAG, "  local_command_model=%s", DEMO_LOCAL_COMMAND_MODEL_NAME);
+    ESP_LOGI(TAG, "  local_command_shadow_mode=%d", DEMO_LOCAL_COMMAND_SHADOW_MODE);
+    ESP_LOGI(TAG, "  local_command_intercept_enabled=%d", DEMO_LOCAL_COMMAND_INTERCEPT_ENABLED);
+    ESP_LOGI(TAG, "  local_command_min_prob=%.2f", (double)DEMO_LOCAL_COMMAND_MIN_PROB);
+    ESP_LOGI(TAG, "  local_command_idiom_context_ttl_sec=%d", DEMO_LOCAL_COMMAND_IDIOM_CONTEXT_TTL_SEC);
     ESP_LOGI(TAG, "  realtime_audio_open_timeout_ms=%d", DEMO_REALTIME_AUDIO_OPEN_TIMEOUT_MS);
     ESP_LOGI(TAG, "  realtime_audio_read_timeout_ms=%d", DEMO_REALTIME_AUDIO_READ_TIMEOUT_MS);
     ESP_LOGI(TAG, "  realtime_audio_jitter_buffer_bytes=%d", DEMO_REALTIME_AUDIO_JITTER_BUFFER_BYTES);
@@ -385,11 +394,181 @@ static void app_log_stage_result(const char *stage, esp_err_t ret, int64_t elaps
     }
 }
 
+typedef struct {
+    uint8_t *data;
+    size_t bytes;
+    size_t capacity;
+    bool overflow;
+    bool enabled;
+} app_local_pcm_capture_t;
+
+typedef struct {
+    cloud_opus_uplink_t *uplink;
+    bool local_enabled;
+    bool local_warning_logged;
+    bool local_result_seen;
+    bool intercept_requested;
+    local_command_result_t local_result;
+    app_local_pcm_capture_t capture;
+} app_v5_opus_uplink_sink_ctx_t;
+
+static bool app_local_command_intercept_enabled(void)
+{
+    return DEMO_LOCAL_COMMAND_ENABLED &&
+           DEMO_LOCAL_COMMAND_INTERCEPT_ENABLED &&
+           !DEMO_LOCAL_COMMAND_SHADOW_MODE;
+}
+
+static bool app_local_idiom_context_active(int64_t now_us)
+{
+    return s_local_idiom_context_until_us > 0 && now_us < s_local_idiom_context_until_us;
+}
+
+static bool app_local_command_should_intercept(const local_command_result_t *result)
+{
+    if (!app_local_command_intercept_enabled() || result == NULL || !result->accepted) {
+        return false;
+    }
+
+    local_command_kind_t kind = local_command_service_kind_for_id(result->command_id);
+    if (kind == LOCAL_COMMAND_KIND_IDIOM_START) {
+        return true;
+    }
+    if ((kind == LOCAL_COMMAND_KIND_IDIOM_MODE || kind == LOCAL_COMMAND_KIND_IDIOM_EXIT) &&
+        app_local_idiom_context_active(esp_timer_get_time())) {
+        return true;
+    }
+
+    ESP_LOGI(TAG,
+             "local_command_not_intercepted command_id=%d text=%s reason=idiom_context_inactive",
+             result->command_id,
+             result->text[0] != '\0' ? result->text : "(empty)");
+    return false;
+}
+
+static void app_local_command_note_intercept_success(const local_command_result_t *result)
+{
+    if (result == NULL || !result->accepted) {
+        return;
+    }
+
+    const local_command_kind_t kind = local_command_service_kind_for_id(result->command_id);
+    if (kind == LOCAL_COMMAND_KIND_IDIOM_EXIT) {
+        s_local_idiom_context_until_us = 0;
+        ESP_LOGI(TAG, "local_command_idiom_context event=clear command_id=%d", result->command_id);
+        return;
+    }
+    if (kind == LOCAL_COMMAND_KIND_IDIOM_START || kind == LOCAL_COMMAND_KIND_IDIOM_MODE) {
+        s_local_idiom_context_until_us =
+            esp_timer_get_time() + ((int64_t)DEMO_LOCAL_COMMAND_IDIOM_CONTEXT_TTL_SEC * 1000000LL);
+        ESP_LOGI(TAG,
+                 "local_command_idiom_context event=extend command_id=%d ttl_sec=%d",
+                 result->command_id,
+                 DEMO_LOCAL_COMMAND_IDIOM_CONTEXT_TTL_SEC);
+    }
+}
+
+static esp_err_t app_local_command_submit_text_session(const local_command_result_t *result,
+                                                       cloud_realtime_session_t *session)
+{
+    if (result == NULL || session == NULL || !result->accepted) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *text = result->text[0] != '\0'
+                           ? result->text
+                           : local_command_service_text_for_id(result->command_id);
+    if (text == NULL || text[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG,
+             "local_command_intercept_submit command_id=%d text=%s prob=%.2f",
+             result->command_id,
+             text,
+             (double)result->probability);
+    return cloud_client_submit_text_session(text,
+                                            result->command_id,
+                                            result->probability,
+                                            session);
+}
+
+static void app_local_pcm_capture_free(app_local_pcm_capture_t *capture)
+{
+    if (capture == NULL) {
+        return;
+    }
+    free(capture->data);
+    memset(capture, 0, sizeof(*capture));
+}
+
+static void app_local_pcm_capture_append(app_local_pcm_capture_t *capture,
+                                         const uint8_t *pcm,
+                                         size_t pcm_bytes)
+{
+    if (capture == NULL || !capture->enabled || pcm == NULL || pcm_bytes == 0 || capture->overflow) {
+        return;
+    }
+    if (capture->bytes + pcm_bytes > DEMO_AUDIO_BUFFER_BYTES) {
+        capture->overflow = true;
+        return;
+    }
+
+    const size_t needed = capture->bytes + pcm_bytes;
+    if (needed > capture->capacity) {
+        size_t new_capacity = capture->capacity > 0 ? capture->capacity : 4096;
+        while (new_capacity < needed) {
+            new_capacity *= 2;
+        }
+        uint8_t *new_data = realloc(capture->data, new_capacity);
+        if (new_data == NULL) {
+            capture->overflow = true;
+            return;
+        }
+        capture->data = new_data;
+        capture->capacity = new_capacity;
+    }
+
+    memcpy(capture->data + capture->bytes, pcm, pcm_bytes);
+    capture->bytes += pcm_bytes;
+}
+
 static esp_err_t app_v5_opus_uplink_pcm_sink(const uint8_t *pcm,
                                              size_t pcm_bytes,
                                              void *user_ctx)
 {
-    return cloud_client_opus_uplink_send_pcm((cloud_opus_uplink_t *)user_ctx, pcm, pcm_bytes);
+    if (pcm == NULL || pcm_bytes == 0 || user_ctx == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    app_v5_opus_uplink_sink_ctx_t *ctx = (app_v5_opus_uplink_sink_ctx_t *)user_ctx;
+    app_local_pcm_capture_append(&ctx->capture, pcm, pcm_bytes);
+
+    if (ctx->local_enabled) {
+        local_command_result_t local_result = {0};
+        esp_err_t local_ret = local_command_service_feed(pcm, pcm_bytes, &local_result);
+        if (local_ret != ESP_OK) {
+            if (!ctx->local_warning_logged) {
+                ctx->local_warning_logged = true;
+                ESP_LOGW(TAG, "local_command_feed_failed err=%s", esp_err_to_name(local_ret));
+            }
+            ctx->local_enabled = false;
+        } else if (local_result.accepted && !ctx->local_result_seen) {
+            ctx->local_result_seen = true;
+            ctx->local_result = local_result;
+            if (app_local_command_should_intercept(&local_result)) {
+                ctx->intercept_requested = true;
+                ESP_LOGI(TAG,
+                         "local_command_intercept_requested command_id=%d text=%s prob=%.2f",
+                         local_result.command_id,
+                         local_result.text,
+                         (double)local_result.probability);
+                return APP_LOCAL_COMMAND_INTERCEPT_REQUESTED;
+            }
+        }
+    }
+
+    return cloud_client_opus_uplink_send_pcm(ctx->uplink, pcm, pcm_bytes);
 }
 
 static void app_log_v5_uplink_metrics(const cloud_opus_uplink_metrics_t *metrics,
@@ -601,6 +780,8 @@ static esp_err_t run_trigger_pipeline(app_state_t *state)
 #if V5_OPUS_UPLINK_WS_ENABLED
     if (DEMO_AUDIO_MODE == DEMO_AUDIO_MODE_V3_REALTIME) {
         cloud_opus_uplink_t *uplink = NULL;
+        bool local_session_started = false;
+        app_v5_opus_uplink_sink_ctx_t uplink_sink_ctx = {0};
         v5_uplink_attempted = true;
         app_set_state(state, APP_STATE_RECORDING);
         app_log_stage_start("v5_opus_uplink");
@@ -611,21 +792,72 @@ static esp_err_t run_trigger_pipeline(app_state_t *state)
                  V5_OPUS_UPLINK_ANSWER_MODE,
                  V5_OPUS_UPLINK_FRAME_MS,
                  V5_OPUS_UPLINK_FALLBACK_LEGACY_AUDIO);
+        esp_err_t local_begin_ret = local_command_service_begin_session();
+        if (local_begin_ret == ESP_OK) {
+            local_session_started = true;
+        } else if (local_begin_ret != ESP_ERR_NOT_SUPPORTED) {
+            ESP_LOGW(TAG, "local_command_begin_failed err=%s", esp_err_to_name(local_begin_ret));
+        }
         ret = cloud_client_opus_uplink_begin(&uplink, &opus_uplink_metrics);
         if (ret == ESP_OK) {
+            uplink_sink_ctx.uplink = uplink;
+            uplink_sink_ctx.local_enabled = local_session_started;
+            uplink_sink_ctx.capture.enabled = app_local_command_intercept_enabled();
             ret = audio_in_stream_after_speech_start(speech_prefix,
                                                      speech_prefix_bytes,
                                                      app_v5_opus_uplink_pcm_sink,
-                                                     uplink,
+                                                     &uplink_sink_ctx,
                                                      &record_metrics);
+        }
+        if (local_session_started) {
+            local_command_service_end_session();
+            local_session_started = false;
         }
         if (ret == ESP_OK) {
             ret = cloud_client_opus_uplink_finish(uplink, &realtime_session);
             uplink = NULL;
+        } else if (ret == APP_LOCAL_COMMAND_INTERCEPT_REQUESTED &&
+                   uplink_sink_ctx.intercept_requested) {
+            if (uplink != NULL) {
+                cloud_client_opus_uplink_abort(uplink);
+                uplink = NULL;
+            }
+            app_set_state(state, APP_STATE_POSTING_SESSION);
+            app_log_stage_start("post_text_session");
+            int64_t text_submit_start_us = esp_timer_get_time();
+            ret = app_local_command_submit_text_session(&uplink_sink_ctx.local_result, &realtime_session);
+            app_log_stage_result("post_text_session", ret, esp_timer_get_time() - text_submit_start_us);
+            if (ret == ESP_OK) {
+                realtime_session_ready = true;
+                app_local_command_note_intercept_success(&uplink_sink_ctx.local_result);
+            } else {
+                ESP_LOGW(TAG,
+                         "local_command_text_session_failed err=%s fallback_to_pcm_session=%d captured_pcm_bytes=%u overflow=%d",
+                         esp_err_to_name(ret),
+                         uplink_sink_ctx.capture.data != NULL && uplink_sink_ctx.capture.bytes > 0 &&
+                             !uplink_sink_ctx.capture.overflow,
+                         (unsigned)uplink_sink_ctx.capture.bytes,
+                         uplink_sink_ctx.capture.overflow);
+                if (uplink_sink_ctx.capture.data != NULL &&
+                    uplink_sink_ctx.capture.bytes > 0 &&
+                    !uplink_sink_ctx.capture.overflow) {
+                    int64_t fallback_submit_start_us = esp_timer_get_time();
+                    ret = cloud_client_submit_realtime_session(uplink_sink_ctx.capture.data,
+                                                               uplink_sink_ctx.capture.bytes,
+                                                               &realtime_session);
+                    app_log_stage_result("post_session_local_command_fallback",
+                                         ret,
+                                         esp_timer_get_time() - fallback_submit_start_us);
+                    if (ret == ESP_OK) {
+                        realtime_session_ready = true;
+                    }
+                }
+            }
         } else if (uplink != NULL) {
             cloud_client_opus_uplink_abort(uplink);
             uplink = NULL;
         }
+        app_local_pcm_capture_free(&uplink_sink_ctx.capture);
         app_log_stage_result("v5_opus_uplink", ret, esp_timer_get_time() - stage_start_us);
         app_log_v5_uplink_metrics(&opus_uplink_metrics, pipeline_start_us);
         if (ret == ESP_OK) {
@@ -709,6 +941,31 @@ static esp_err_t run_trigger_pipeline(app_state_t *state)
              record_metrics.vad_stopped,
              record_metrics.voice_started,
              (unsigned)record_metrics.max_level);
+
+    local_command_result_t buffered_local_result = {0};
+    esp_err_t local_detect_ret =
+        local_command_service_detect_buffer(pcm_buffer, pcm_bytes, &buffered_local_result);
+    if (local_detect_ret != ESP_OK && local_detect_ret != ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "local_command_detect_buffer_failed err=%s", esp_err_to_name(local_detect_ret));
+    }
+    if (buffered_local_result.accepted && app_local_command_should_intercept(&buffered_local_result)) {
+        app_set_state(state, APP_STATE_POSTING_SESSION);
+        app_log_stage_start("post_text_session");
+        stage_start_us = esp_timer_get_time();
+        ret = app_local_command_submit_text_session(&buffered_local_result, &realtime_session);
+        app_log_stage_result("post_text_session", ret, esp_timer_get_time() - stage_start_us);
+        if (ret == ESP_OK) {
+            realtime_session_ready = true;
+            app_local_command_note_intercept_success(&buffered_local_result);
+            free(pcm_buffer);
+            pcm_buffer = NULL;
+            goto submit_complete;
+        }
+        ESP_LOGW(TAG,
+                 "local_command_text_session_failed err=%s fallback_to_cloud_asr=1",
+                 esp_err_to_name(ret));
+        ret = ESP_OK;
+    }
 
     app_set_state(state, APP_STATE_POSTING_SESSION);
     app_log_stage_start(DEMO_AUDIO_MODE == DEMO_AUDIO_MODE_V3_REALTIME ? "post_session" : "upload");
@@ -2223,6 +2480,11 @@ static void app_runtime_task(void *arg)
         ESP_LOGE(TAG, "Runtime configuration invalid; stopping demo");
         vTaskDelete(NULL);
         return;
+    }
+
+    esp_err_t local_command_ret = local_command_service_init();
+    if (local_command_ret != ESP_OK && local_command_ret != ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "local_multinet_init_skipped err=%s", esp_err_to_name(local_command_ret));
     }
 
     if (app_network_start() != ESP_OK) {

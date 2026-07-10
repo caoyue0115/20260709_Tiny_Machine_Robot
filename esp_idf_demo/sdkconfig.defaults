@@ -18,6 +18,8 @@ CONFIG_DEMO_AUDIO_PCB_ESP_VOCAT_V1_0=y
 # Wake word requires the Xiaoming Tongxue WakeNet model in the model partition.
 CONFIG_MODEL_IN_FLASH=y
 CONFIG_SR_WN_WN9_XIAOMINGTONGXUE_TTS2=y
+CONFIG_SR_MN_CN_MULTINET7_QUANT=y
+# CONFIG_SR_MN_CN_NONE is not set
 
 # esp-wifi-connect invokes C++ callbacks and scan handling from the system
 # event task. The ESP-IDF default stack overflows during station connect.

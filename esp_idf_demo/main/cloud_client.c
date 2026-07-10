@@ -2545,6 +2545,117 @@ esp_err_t cloud_client_submit_realtime_session(const uint8_t *pcm,
     return ret;
 }
 
+esp_err_t cloud_client_submit_text_session(const char *question_text,
+                                           int command_id,
+                                           float confidence,
+                                           cloud_realtime_session_t *session)
+{
+    if (question_text == NULL || question_text[0] == '\0' || session == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (DEMO_SERVER_BASE_URL[0] == '\0') {
+        ESP_LOGE(TAG, "DEMO_SERVER_BASE_URL is empty");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char url[256];
+    esp_err_t ret = cloud_build_url(url, sizeof(url), "api/v5/realtime/text-sessions");
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(root, "question_text", question_text);
+    cJSON_AddStringToObject(root, "source", "local_multinet");
+    cJSON_AddNumberToObject(root, "command_id", command_id);
+    cJSON_AddNumberToObject(root, "confidence", confidence);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    cloud_response_buffer_t response = {0};
+    ret = cloud_response_buffer_init(&response, 2048);
+    if (ret != ESP_OK) {
+        cJSON_free(json);
+        return ret;
+    }
+
+    cloud_http_ctx_t ctx = {
+        .buffer = &response,
+    };
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = DEMO_REALTIME_SESSION_TIMEOUT_MS,
+        .event_handler = cloud_http_event_handler,
+        .user_data = &ctx,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        cJSON_free(json);
+        cloud_response_buffer_free(&response);
+        return ESP_FAIL;
+    }
+
+    esp_http_client_set_header(client, "content-type", "application/json");
+    esp_http_client_set_header(client, "accept", "application/json");
+    esp_http_client_set_header(client, "x-device-id", DEMO_DEVICE_ID);
+    esp_http_client_set_header(client, "x-answer-mode", V5_OPUS_UPLINK_ANSWER_MODE);
+
+    ret = esp_http_client_set_post_field(client, json, (int)strlen(json));
+    if (ret != ESP_OK) {
+        cJSON_free(json);
+        esp_http_client_cleanup(client);
+        cloud_response_buffer_free(&response);
+        return ret;
+    }
+
+    const int64_t start_us = esp_timer_get_time();
+    ret = esp_http_client_perform(client);
+    const int64_t elapsed_us = esp_timer_get_time() - start_us;
+    cJSON_free(json);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Text realtime session create failed: %s", esp_err_to_name(ret));
+        esp_http_client_cleanup(client);
+        cloud_response_buffer_free(&response);
+        return ret;
+    }
+
+    const int status_code = esp_http_client_get_status_code(client);
+    if (status_code != 202) {
+        ESP_LOGE(TAG,
+                 "Text realtime session HTTP %d: %s",
+                 status_code,
+                 response.data != NULL ? response.data : "");
+        esp_http_client_cleanup(client);
+        cloud_response_buffer_free(&response);
+        return ESP_FAIL;
+    }
+
+    ret = cloud_json_parse_realtime_session(response.data != NULL ? response.data : "", session);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "Text realtime session accepted: session_id=%s command_id=%d confidence=%.2f elapsed_ms=%.1f",
+                 session->session_id,
+                 command_id,
+                 (double)confidence,
+                 (double)elapsed_us / 1000.0);
+    } else {
+        ESP_LOGE(TAG, "Failed to parse text realtime session response: %s", esp_err_to_name(ret));
+    }
+
+    esp_http_client_cleanup(client);
+    cloud_response_buffer_free(&response);
+    return ret;
+}
+
 esp_err_t cloud_client_poll_task(const char *task_id,
                                  cloud_task_result_t *result,
                                  int timeout_ms,

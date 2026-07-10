@@ -11,7 +11,11 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse
 
-from src.models.realtime import RealtimeSessionAcceptedResponse, RealtimeSessionStatusResponse
+from src.models.realtime import (
+    RealtimeSessionAcceptedResponse,
+    RealtimeSessionStatusResponse,
+    RealtimeTextSessionRequest,
+)
 from src.providers.opus import (
     LibOpusDecoder,
     OpusError,
@@ -260,6 +264,47 @@ async def create_opus_realtime_session(
     session_trace.update(uplink_trace)
     store.update_session(session["session_id"], trace=session_trace)
     start_realtime_session(store, session["session_id"])
+    return RealtimeSessionAcceptedResponse(
+        status="accepted",
+        session_id=session["session_id"],
+        received_at=session["created_at"],
+        audio_stream_url=session["audio_stream_url"],
+    )
+
+
+@router.post("/api/v5/realtime/text-sessions", response_model=RealtimeSessionAcceptedResponse, status_code=202)
+async def create_realtime_text_session(
+    payload: RealtimeTextSessionRequest,
+    x_device_id: str = Header(...),
+    x_answer_mode: str | None = Header(default=None),
+) -> RealtimeSessionAcceptedResponse:
+    question_text = payload.question_text.strip()
+    if not question_text:
+        raise HTTPException(status_code=422, detail="empty_question_text")
+
+    answer_mode = (x_answer_mode or "default").strip() or "default"
+    if answer_mode not in ANSWER_MODE_CHOICES:
+        raise HTTPException(status_code=400, detail="invalid_answer_mode")
+
+    session = store.create_session(device_id=x_device_id, input_wav_path=None)
+    trace = dict(session["trace"])
+    trace.update(
+        {
+            "asr_provider": payload.source,
+            "asr_provider_used": payload.source,
+            "asr_ms": 0,
+            "local_command_source": payload.source,
+            "local_command_id": payload.command_id,
+            "local_command_confidence": payload.confidence,
+        }
+    )
+    store.update_session(session["session_id"], question_text=question_text, trace=trace)
+    start_realtime_session_from_question(
+        store,
+        session["session_id"],
+        question_text,
+        answer_mode=answer_mode,
+    )
     return RealtimeSessionAcceptedResponse(
         status="accepted",
         session_id=session["session_id"],

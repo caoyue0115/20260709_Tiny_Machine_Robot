@@ -1476,6 +1476,63 @@ class RealtimeSchemaTests(unittest.TestCase):
         synthesize_audio.assert_not_called()
         self.assertEqual(list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)), [b"\x01\x00", b"\x02\x00"])
 
+    def test_post_realtime_text_session_skips_asr_and_records_local_command_trace(self) -> None:
+        from src.api import realtime as realtime_api
+        from src.models.realtime import RealtimeTextSessionRequest
+
+        request = RealtimeTextSessionRequest(
+            question_text="开始成语接龙",
+            source="local_multinet",
+            command_id=100,
+            confidence=0.92,
+        )
+
+        with mock.patch.object(realtime_api, "start_realtime_session_from_question") as start_stub:
+            payload = asyncio.run(
+                realtime_api.create_realtime_text_session(
+                    request,
+                    x_device_id="esp-local-command",
+                    x_answer_mode="short",
+                )
+            )
+
+        self.assertEqual(payload.status, "accepted")
+        self.assertTrue(payload.audio_stream_url.endswith(f"/api/v3/realtime/sessions/{payload.session_id}/audio"))
+        start_stub.assert_called_once()
+        self.assertEqual(start_stub.call_args.args[0], realtime_api.store)
+        self.assertEqual(start_stub.call_args.args[1], payload.session_id)
+        self.assertEqual(start_stub.call_args.args[2], "开始成语接龙")
+        self.assertEqual(start_stub.call_args.kwargs["answer_mode"], "short")
+
+        session = realtime_api.store.get_session(payload.session_id)
+        self.assertIsNotNone(session)
+        self.assertEqual(session["question_text"], "开始成语接龙")
+        trace = session["trace"]
+        self.assertEqual(trace["asr_provider"], "local_multinet")
+        self.assertEqual(trace["asr_ms"], 0)
+        self.assertEqual(trace["local_command_source"], "local_multinet")
+        self.assertEqual(trace["local_command_id"], 100)
+        self.assertEqual(trace["local_command_confidence"], 0.92)
+
+    def test_post_realtime_text_session_rejects_blank_text(self) -> None:
+        from src.api import realtime as realtime_api
+        from src.models.realtime import RealtimeTextSessionRequest
+
+        request = RealtimeTextSessionRequest(question_text="   ", source="local_multinet")
+
+        with mock.patch.object(realtime_api, "start_realtime_session_from_question") as start_stub:
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(
+                    realtime_api.create_realtime_text_session(
+                        request,
+                        x_device_id="esp-local-command",
+                        x_answer_mode="short",
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        start_stub.assert_not_called()
+
     def test_realtime_session_falls_back_to_wav_tts_when_realtime_tts_unavailable(self) -> None:
         from src.services import realtime_session as realtime_session_service
         from src.storage.realtime_store import InMemoryRealtimeSessionStore

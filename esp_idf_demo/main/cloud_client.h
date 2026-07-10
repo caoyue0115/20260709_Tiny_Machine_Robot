@@ -193,6 +193,11 @@ esp_err_t cloud_client_submit_realtime_session(const uint8_t *pcm,
                                                size_t pcm_bytes,
                                                cloud_realtime_session_t *session);
 
+esp_err_t cloud_client_submit_text_session(const char *question_text,
+                                           int command_id,
+                                           float confidence,
+                                           cloud_realtime_session_t *session);
+
 esp_err_t cloud_client_stream_realtime_audio(const char *audio_stream_url,
                                              cloud_realtime_audio_chunk_callback_t callback,
                                              void *user_ctx,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RealtimeTrace(BaseModel):
@@ -94,6 +94,9 @@ class RealtimeTrace(BaseModel):
     first_tts_chunk_abs_ms: int | None = None
     first_audio_byte_abs_ms: int | None = None
     done_abs_ms: int | None = None
+    local_command_source: str | None = None
+    local_command_id: int | None = None
+    local_command_confidence: float | None = None
 
 
 class RealtimeSessionAcceptedResponse(BaseModel):
@@ -101,6 +104,13 @@ class RealtimeSessionAcceptedResponse(BaseModel):
     session_id: str
     received_at: str
     audio_stream_url: str
+
+
+class RealtimeTextSessionRequest(BaseModel):
+    question_text: str = Field(min_length=1, max_length=512)
+    source: Literal["local_multinet"] = "local_multinet"
+    command_id: int | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class RealtimeSessionStatusResponse(BaseModel):

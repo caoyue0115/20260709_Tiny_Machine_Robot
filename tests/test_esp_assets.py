@@ -55,7 +55,7 @@ class EspAssetTests(unittest.TestCase):
         self.assertIn("ota_0,app,ota_0,0x20000,3M", normalized)
         self.assertIn("ota_1,app,ota_1,,3M", normalized)
         self.assertIn("storage,data,spiffs,,4M", normalized)
-        self.assertIn("model,data,,,1M", normalized)
+        self.assertIn("model,data,,,3M", normalized)
         self.assertNotIn("factory,app,factory", normalized)
 
     def test_vocat_lowcost_16m8m_profile_is_explicit_and_keeps_safety_defaults(self) -> None:
@@ -94,7 +94,56 @@ class EspAssetTests(unittest.TestCase):
         self.assertIn("ota_0,app,ota_0,0x20000,3M", partitions)
         self.assertIn("ota_1,app,ota_1,,3M", partitions)
         self.assertIn("storage,data,spiffs,,4M", partitions)
-        self.assertIn("model,data,,,1M", partitions)
+        self.assertIn("model,data,,,3M", partitions)
+
+    def test_multinet_local_command_assets_are_wired_for_shadow_mode(self) -> None:
+        sdkconfig_defaults = (ESP_DIR / "sdkconfig.defaults").read_text(encoding="utf-8")
+        partitions = (ESP_DIR / "partitions.csv").read_text(encoding="utf-8").replace(" ", "")
+        cmake = (ESP_DIR / "main" / "CMakeLists.txt").read_text(encoding="utf-8")
+        config = (ESP_DIR / "main" / "config.h").read_text(encoding="utf-8")
+        main_source = (ESP_DIR / "main" / "main.c").read_text(encoding="utf-8")
+        cloud_header = (ESP_DIR / "main" / "cloud_client.h").read_text(encoding="utf-8")
+        cloud_source = (ESP_DIR / "main" / "cloud_client.c").read_text(encoding="utf-8")
+        local_header = (ESP_DIR / "main" / "local_command_service.h").read_text(encoding="utf-8")
+        local_source = (ESP_DIR / "main" / "local_command_service.c").read_text(encoding="utf-8")
+
+        self.assertIn("CONFIG_MODEL_IN_FLASH=y", sdkconfig_defaults)
+        self.assertIn("CONFIG_SR_MN_CN_MULTINET7_QUANT=y", sdkconfig_defaults)
+        self.assertIn("# CONFIG_SR_MN_CN_NONE is not set", sdkconfig_defaults)
+        self.assertIn("model,data,,,3M", partitions)
+        self.assertIn('"local_command_service.c"', cmake)
+
+        for required_macro in (
+            "DEMO_LOCAL_COMMAND_ENABLED",
+            "DEMO_LOCAL_COMMAND_SHADOW_MODE",
+            "DEMO_LOCAL_COMMAND_INTERCEPT_ENABLED",
+            "DEMO_LOCAL_COMMAND_MIN_PROB",
+            "DEMO_LOCAL_COMMAND_IDIOM_CONTEXT_TTL_SEC",
+        ):
+            self.assertIn(required_macro, config)
+
+        for snippet in (
+            "esp_mn_commands_add",
+            "esp_mn_commands_update",
+            "ESP_MN_LOAD_FROM_PSRAM_FLASH",
+            "local_multinet_initialized",
+            "local_multinet_commands_updated",
+            "local_multinet_result detected=1 command_id=%d text=%s prob=%.2f shadow=%d intercept=%d",
+            "jin ru cheng yu jie long",
+            "kai shi cheng yu jie long",
+            "wan cheng yu jie long",
+            "jian dan mo shi",
+            "kun nan mo shi",
+            "tui chu you xi",
+        ):
+            self.assertIn(snippet, local_source)
+
+        self.assertIn("local_command_service_feed", local_header)
+        self.assertIn("local_command_service_feed", main_source)
+        self.assertIn("local_command_service_detect_buffer", main_source)
+        self.assertIn("cloud_client_submit_text_session", cloud_header)
+        self.assertIn("cloud_client_submit_text_session", cloud_source)
+        self.assertIn("api/v5/realtime/text-sessions", cloud_source)
 
     def test_vocat_lowcost_16m8m_defaults_to_v1_0_audio_binding(self) -> None:
         profile = (ESP_DIR / "sdkconfig.defaults.vocat_lowcost_16m8m").read_text(encoding="utf-8")
@@ -186,7 +235,7 @@ class EspAssetTests(unittest.TestCase):
         self.assertIn("ota_0,app,ota_0,0x20000,3M", partitions)
         self.assertIn("ota_1,app,ota_1,,3M", partitions)
         self.assertIn("storage,data,spiffs,,4M", partitions)
-        self.assertIn("model,data,,,1M", partitions)
+        self.assertIn("model,data,,,3M", partitions)
 
         release_logic_sources = "\n".join(
             path.read_text(encoding="utf-8")
@@ -529,7 +578,7 @@ class EspAssetTests(unittest.TestCase):
         self.assertIn("ota_0,app,ota_0,0x20000,3M", partitions)
         self.assertIn("ota_1,app,ota_1,,3M", partitions)
         self.assertIn("storage,data,spiffs,,4M", partitions)
-        self.assertIn("model,data,,,1M", partitions)
+        self.assertIn("model,data,,,3M", partitions)
         self.assertIn("CONFIG_MODEL_IN_FLASH=y", lowcost_profile)
 
         untouched_release_and_server_paths = (
