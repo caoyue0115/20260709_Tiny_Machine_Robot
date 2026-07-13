@@ -14,12 +14,13 @@ typedef enum {
     LOCAL_COMMAND_KIND_NONE = 0,
     LOCAL_COMMAND_KIND_IDIOM_START,
     LOCAL_COMMAND_KIND_IDIOM_MODE,
-    LOCAL_COMMAND_KIND_IDIOM_EXIT,
+    LOCAL_COMMAND_KIND_IDIOM_REPEAT,
 } local_command_kind_t;
 
 typedef struct {
     bool detected;
     bool accepted;
+    bool timed_out;
     int command_id;
     float probability;
     char text[DEMO_LOCAL_COMMAND_TEXT_MAX_LEN];

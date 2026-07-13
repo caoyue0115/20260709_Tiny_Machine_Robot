@@ -434,7 +434,7 @@ static bool app_local_command_should_intercept(const local_command_result_t *res
     if (kind == LOCAL_COMMAND_KIND_IDIOM_START) {
         return true;
     }
-    if ((kind == LOCAL_COMMAND_KIND_IDIOM_MODE || kind == LOCAL_COMMAND_KIND_IDIOM_EXIT) &&
+    if ((kind == LOCAL_COMMAND_KIND_IDIOM_MODE || kind == LOCAL_COMMAND_KIND_IDIOM_REPEAT) &&
         app_local_idiom_context_active(esp_timer_get_time())) {
         return true;
     }
@@ -453,12 +453,9 @@ static void app_local_command_note_intercept_success(const local_command_result_
     }
 
     const local_command_kind_t kind = local_command_service_kind_for_id(result->command_id);
-    if (kind == LOCAL_COMMAND_KIND_IDIOM_EXIT) {
-        s_local_idiom_context_until_us = 0;
-        ESP_LOGI(TAG, "local_command_idiom_context event=clear command_id=%d", result->command_id);
-        return;
-    }
-    if (kind == LOCAL_COMMAND_KIND_IDIOM_START || kind == LOCAL_COMMAND_KIND_IDIOM_MODE) {
+    if (kind == LOCAL_COMMAND_KIND_IDIOM_START ||
+        kind == LOCAL_COMMAND_KIND_IDIOM_MODE ||
+        kind == LOCAL_COMMAND_KIND_IDIOM_REPEAT) {
         s_local_idiom_context_until_us =
             esp_timer_get_time() + ((int64_t)DEMO_LOCAL_COMMAND_IDIOM_CONTEXT_TTL_SEC * 1000000LL);
         ESP_LOGI(TAG,
@@ -646,6 +643,299 @@ static esp_err_t app_validate_runtime_config(void)
     }
 
     return ESP_OK;
+}
+
+#define APP_IDIOM_GAME_ECHO_GUARD_MS 200
+#define APP_IDIOM_GAME_MAX_RECONNECT_ATTEMPTS 3
+#define APP_IDIOM_GAME_RECONNECT_DELAY_MS 500
+
+typedef enum {
+    APP_IDIOM_GAME_SOCKET_IDLE = 0,
+    APP_IDIOM_GAME_PLAYBACK,
+    APP_IDIOM_GAME_ECHO_GUARD,
+    APP_IDIOM_GAME_VAD_ARMED,
+    APP_IDIOM_GAME_UPLOADING,
+    APP_IDIOM_GAME_WAITING_REPLY,
+} app_idiom_game_state_t;
+
+typedef struct {
+    cloud_idiom_game_client_t *client;
+    const char *turn_id;
+    bool local_enabled;
+    bool cloud_turn_started;
+    bool intercept_requested;
+    local_command_result_t local_result;
+    app_local_pcm_capture_t capture;
+} app_idiom_game_capture_ctx_t;
+
+static void app_idiom_game_set_state(app_idiom_game_state_t *state,
+                                     app_idiom_game_state_t next)
+{
+    if (state != NULL) {
+        *state = next;
+    }
+    ESP_LOGI(TAG, "idiom_game_state=%d", (int)next);
+}
+
+static esp_err_t app_idiom_game_start_cloud_turn(app_idiom_game_capture_ctx_t *ctx)
+{
+    if (ctx == NULL || ctx->client == NULL || ctx->turn_id == NULL ||
+        ctx->turn_id[0] == '\0' || ctx->cloud_turn_started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t ret = cloud_client_idiom_game_begin_turn(ctx->client, ctx->turn_id);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ctx->cloud_turn_started = true;
+    if (ctx->capture.data != NULL && ctx->capture.bytes > 0) {
+        ret = cloud_client_idiom_game_send_pcm(ctx->client,
+                                               ctx->capture.data,
+                                               ctx->capture.bytes);
+    }
+    app_local_pcm_capture_free(&ctx->capture);
+    return ret;
+}
+
+static esp_err_t app_idiom_game_capture_sink(const uint8_t *pcm,
+                                             size_t pcm_bytes,
+                                             void *user_ctx)
+{
+    if (pcm == NULL || pcm_bytes == 0 || user_ctx == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    app_idiom_game_capture_ctx_t *ctx = (app_idiom_game_capture_ctx_t *)user_ctx;
+    if (ctx->cloud_turn_started) {
+        return cloud_client_idiom_game_send_pcm(ctx->client, pcm, pcm_bytes);
+    }
+
+    app_local_pcm_capture_append(&ctx->capture, pcm, pcm_bytes);
+    if (ctx->capture.overflow) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (ctx->local_enabled) {
+        local_command_result_t result = {0};
+        esp_err_t local_ret = local_command_service_feed(pcm, pcm_bytes, &result);
+        if (local_ret != ESP_OK) {
+            local_command_service_end_session();
+            ctx->local_enabled = false;
+        } else if (result.accepted && app_local_command_should_intercept(&result)) {
+            ctx->local_result = result;
+            ctx->intercept_requested = true;
+            return APP_LOCAL_COMMAND_INTERCEPT_REQUESTED;
+        } else if (result.timed_out) {
+            local_command_service_end_session();
+            ctx->local_enabled = false;
+        }
+    }
+    if (!ctx->local_enabled) {
+        return app_idiom_game_start_cloud_turn(ctx);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t app_play_idiom_game_audio(const char *audio_stream_url)
+{
+    if (audio_stream_url == NULL || audio_stream_url[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    app_realtime_stream_ctx_t stream_ctx = {
+        .pipeline_start_us = esp_timer_get_time(),
+        .playback_gate_open = true,
+    };
+    cloud_realtime_audio_metrics_t metrics = {0};
+    esp_err_t ret = audio_out_open_pcm_stream(DEMO_AUDIO_SAMPLE_RATE,
+                                              DEMO_AUDIO_CHANNELS,
+                                              DEMO_AUDIO_BITS_PER_SAMPLE);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    stream_ctx.open_audio_done_us = esp_timer_get_time();
+    ret = cloud_client_stream_realtime_audio(audio_stream_url,
+                                             app_realtime_audio_chunk_sink,
+                                             &stream_ctx,
+                                             &metrics);
+    esp_err_t close_ret = audio_out_close_pcm_stream();
+    if (ret == ESP_OK) {
+        ret = close_ret;
+    }
+    return ret;
+}
+
+static esp_err_t app_idiom_game_connect_with_retry(cloud_idiom_game_client_t **client,
+                                                   cloud_opus_uplink_metrics_t *metrics)
+{
+    if (client == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *client = NULL;
+    esp_err_t ret = ESP_FAIL;
+    for (int attempt = 1; attempt <= APP_IDIOM_GAME_MAX_RECONNECT_ATTEMPTS; ++attempt) {
+        ret = cloud_client_idiom_game_connect(client, metrics);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "idiom_game_ws connected attempt=%d device_id=%s", attempt, DEMO_DEVICE_ID);
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG,
+                 "idiom_game_ws reconnect_failed attempt=%d max=%d err=%s",
+                 attempt,
+                 APP_IDIOM_GAME_MAX_RECONNECT_ATTEMPTS,
+                 esp_err_to_name(ret));
+        if (*client != NULL) {
+            cloud_client_idiom_game_close(*client);
+            *client = NULL;
+        }
+        vTaskDelay(pdMS_TO_TICKS(APP_IDIOM_GAME_RECONNECT_DELAY_MS * attempt));
+    }
+    return ret;
+}
+
+static esp_err_t app_run_idiom_game_loop(app_state_t *state)
+{
+    app_idiom_game_state_t game_state = APP_IDIOM_GAME_SOCKET_IDLE;
+    cloud_idiom_game_client_t *client = NULL;
+    cloud_opus_uplink_metrics_t metrics = {0};
+    esp_err_t ret = app_idiom_game_connect_with_retry(&client, &metrics);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    uint32_t turn_sequence = 0;
+    while (app_local_idiom_context_active(esp_timer_get_time())) {
+        app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_ECHO_GUARD);
+        vTaskDelay(pdMS_TO_TICKS(APP_IDIOM_GAME_ECHO_GUARD_MS));
+
+        app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_VAD_ARMED);
+        uint8_t *speech_prefix = NULL;
+        size_t speech_prefix_bytes = 0;
+        audio_in_wait_metrics_t wait_metrics = {0};
+        ret = audio_in_wait_for_game_speech_start(&speech_prefix,
+                                                  &speech_prefix_bytes,
+                                                  &wait_metrics);
+        if (ret == DEMO_AUDIO_IN_ERR_WAIT_TIMEOUT) {
+            app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
+            ret = ESP_OK;
+            continue;
+        }
+        if (ret != ESP_OK) {
+            free(speech_prefix);
+            break;
+        }
+
+        char turn_id[64];
+        snprintf(turn_id,
+                 sizeof(turn_id),
+                 "%s-%llu-%u",
+                 DEMO_DEVICE_ID,
+                 (unsigned long long)esp_timer_get_time(),
+                 (unsigned)++turn_sequence);
+        app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_UPLOADING);
+        app_set_state(state, APP_STATE_RECORDING);
+        app_idiom_game_capture_ctx_t capture_ctx = {
+            .client = client,
+            .turn_id = turn_id,
+            .capture = {.enabled = true},
+        };
+        esp_err_t local_begin_ret = local_command_service_begin_session();
+        capture_ctx.local_enabled = local_begin_ret == ESP_OK;
+        audio_in_record_metrics_t record_metrics = {0};
+        ret = audio_in_stream_game_after_speech_start(speech_prefix,
+                                                      speech_prefix_bytes,
+                                                      app_idiom_game_capture_sink,
+                                                      &capture_ctx,
+                                                      &record_metrics);
+        free(speech_prefix);
+        speech_prefix = NULL;
+        if (capture_ctx.local_enabled) {
+            local_command_service_end_session();
+            capture_ctx.local_enabled = false;
+        }
+
+        if (ret == APP_LOCAL_COMMAND_INTERCEPT_REQUESTED && capture_ctx.intercept_requested) {
+            app_local_pcm_capture_free(&capture_ctx.capture);
+            cloud_realtime_session_t local_session = {0};
+            app_set_state(state, APP_STATE_POSTING_SESSION);
+            ret = app_local_command_submit_text_session(&capture_ctx.local_result, &local_session);
+            if (ret != ESP_OK) {
+                app_play_retry_prompt("idiom_game_local_command_failed",
+                                      DEMO_RECORD_RETRY_ERROR_PROMPT_PATH);
+                ret = ESP_OK;
+                continue;
+            }
+            app_local_command_note_intercept_success(&capture_ctx.local_result);
+            app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
+            app_set_state(state, APP_STATE_PLAYING);
+            ret = app_play_idiom_game_audio(local_session.audio_stream_url);
+            if (ret != ESP_OK) {
+                break;
+            }
+            app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
+            continue;
+        }
+        if (ret != ESP_OK) {
+            app_local_pcm_capture_free(&capture_ctx.capture);
+            cloud_client_idiom_game_close(client);
+            client = NULL;
+            ret = app_idiom_game_connect_with_retry(&client, &metrics);
+            if (ret != ESP_OK) {
+                break;
+            }
+            app_play_retry_prompt("idiom_game_turn_upload_failed", DEMO_RECORD_RETRY_ERROR_PROMPT_PATH);
+            continue;
+        }
+        if (!capture_ctx.cloud_turn_started) {
+            ret = app_idiom_game_start_cloud_turn(&capture_ctx);
+            if (ret != ESP_OK) {
+                app_local_pcm_capture_free(&capture_ctx.capture);
+                cloud_client_idiom_game_close(client);
+                client = NULL;
+                ret = app_idiom_game_connect_with_retry(&client, &metrics);
+                if (ret != ESP_OK) {
+                    break;
+                }
+                continue;
+            }
+        }
+
+        app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_WAITING_REPLY);
+        cloud_realtime_session_t realtime_session = {0};
+        ret = cloud_client_idiom_game_finish_turn(client, turn_id, &realtime_session);
+        if (ret != ESP_OK) {
+            cloud_client_idiom_game_close(client);
+            client = NULL;
+            ret = app_idiom_game_connect_with_retry(&client, &metrics);
+            if (ret != ESP_OK) {
+                break;
+            }
+            app_play_retry_prompt("idiom_game_turn_failed", DEMO_RECORD_RETRY_ERROR_PROMPT_PATH);
+            continue;
+        }
+
+        app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
+        app_set_state(state, APP_STATE_PLAYING);
+        ret = app_play_idiom_game_audio(realtime_session.audio_stream_url);
+        if (ret != ESP_OK) {
+            break;
+        }
+        if (realtime_session.end_skill_state || !realtime_session.skill_active ||
+            strcmp(realtime_session.skill_name, "idiom_game") != 0) {
+            s_local_idiom_context_until_us = 0;
+            ESP_LOGI(TAG,
+                     "idiom_game_end turn_id=%s end_skill_state=%d skill_active=%d",
+                     realtime_session.turn_id,
+                     realtime_session.end_skill_state,
+                     realtime_session.skill_active);
+            break;
+        }
+        app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
+    }
+
+    audio_in_deinit();
+    if (client != NULL) {
+        cloud_client_idiom_game_close(client);
+    }
+    s_local_idiom_context_until_us = 0;
+    return ret;
 }
 
 static esp_err_t run_trigger_pipeline(app_state_t *state)
@@ -1174,6 +1464,23 @@ submit_complete:
             }
             ESP_LOGE(TAG, "error_code=%s err=%s", pipeline_error_code, esp_err_to_name(ret));
             goto cleanup;
+        }
+
+        const bool remote_idiom_active =
+            realtime_session.skill_active &&
+            strcmp(realtime_session.skill_name, "idiom_game") == 0;
+        if (remote_idiom_active && !app_local_idiom_context_active(esp_timer_get_time())) {
+            s_local_idiom_context_until_us =
+                esp_timer_get_time() +
+                ((int64_t)DEMO_LOCAL_COMMAND_IDIOM_CONTEXT_TTL_SEC * 1000000LL);
+        }
+        if (remote_idiom_active || app_local_idiom_context_active(esp_timer_get_time())) {
+            ESP_LOGI(TAG, "idiom_game persistent_session_enter device_id=%s", DEMO_DEVICE_ID);
+            ret = app_run_idiom_game_loop(state);
+            if (ret != ESP_OK) {
+                pipeline_error_code = "idiom_game_loop_failed";
+                goto cleanup;
+            }
         }
 
         app_set_state(state, APP_STATE_DONE);

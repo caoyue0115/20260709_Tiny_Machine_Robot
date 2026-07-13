@@ -60,6 +60,9 @@ def _make_board_done_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "session_started",
         "session_id",
         "audio_stream_url",
+        "skill_name",
+        "skill_active",
+        "end_skill_state",
         "question_text",
         "asr_provider",
         "error_code",
@@ -1110,6 +1113,14 @@ async def stream_opus_realtime_session(
         )
 
     await _drain_asr_start_task()
+    if done_payload.get("session_id") and "成语接龙" in str(done_payload.get("question_text") or ""):
+        skill_metadata = await _wait_for_skill_metadata(
+            str(done_payload["session_id"]),
+            default_skill_name=None,
+            timeout_seconds=2.0,
+        )
+        if skill_metadata.get("skill_name"):
+            done_payload.update(skill_metadata)
     logger.info(
         "realtime_opus_done device_id=%s session_started=%s question_text=%s "
         "run_full_chain=%s asr_provider=%s uplink_frame_count=%s reconstructed_audio_ms=%s "
@@ -1126,6 +1137,208 @@ async def stream_opus_realtime_session(
     )
     await websocket.send_json(_make_board_done_payload(done_payload))
     await websocket.close(code=1000)
+
+
+async def _send_idiom_stream_error(
+    websocket: WebSocket,
+    error_code: str,
+    *,
+    turn_id: str | None = None,
+) -> None:
+    await websocket.send_json(
+        {
+            "type": "error",
+            "turn_id": turn_id,
+            "error_code": error_code,
+            "error_message": error_code,
+            "recoverable": True,
+        }
+    )
+
+
+async def _wait_for_skill_metadata(
+    session_id: str | None,
+    *,
+    default_skill_name: str | None,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    if not session_id:
+        return {
+            "skill_name": default_skill_name,
+            "skill_active": False,
+            "end_skill_state": False,
+        }
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    trace: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        session = store.get_session(session_id)
+        if session is None:
+            break
+        trace = dict(session.get("trace") or {})
+        if (
+            trace.get("skill_route_complete")
+            or trace.get("skill_name") is not None
+            or session.get("status") in {"done", "failed"}
+        ):
+            break
+        await asyncio.sleep(0.01)
+    raw_skill_name = trace.get("skill_name") or default_skill_name
+    skill_name = str(raw_skill_name) if raw_skill_name else None
+    end_skill_state = bool(trace.get("end_skill_state", False))
+    skill_active = bool(
+        trace.get("skill_active", skill_name == "idiom_game" and not end_skill_state)
+    )
+    return {
+        "skill_name": skill_name,
+        "skill_active": skill_active,
+        "end_skill_state": end_skill_state,
+    }
+
+
+class _IdiomTurnWebSocket:
+    def __init__(self, websocket: WebSocket, turn_id: str, start_control: dict[str, Any]) -> None:
+        self._websocket = websocket
+        self.turn_id = turn_id
+        self._start_control = start_control
+        self._start_pending = True
+        self.disconnected = False
+
+    async def accept(self) -> None:
+        return None
+
+    async def receive(self) -> dict[str, Any]:
+        if self._start_pending:
+            self._start_pending = False
+            return {
+                "type": "websocket.receive",
+                "text": json.dumps(self._start_control, ensure_ascii=False),
+            }
+        while True:
+            message = await self._websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                self.disconnected = True
+                return message
+            if message.get("bytes") is not None:
+                return message
+            message_text = message.get("text")
+            if message_text is None:
+                continue
+            try:
+                control = json.loads(message_text)
+            except json.JSONDecodeError:
+                return message
+            control_type = str(control.get("type") or "")
+            if control_type == "utterance_end":
+                incoming_turn_id = str(control.get("turn_id") or "")
+                if incoming_turn_id != self.turn_id:
+                    await _send_idiom_stream_error(
+                        self._websocket,
+                        "stale_turn_id",
+                        turn_id=incoming_turn_id or None,
+                    )
+                    continue
+                converted = dict(control)
+                converted["type"] = "end"
+                return {
+                    "type": "websocket.receive",
+                    "text": json.dumps(converted, ensure_ascii=False),
+                }
+            if control_type == "utterance_start":
+                return {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "duplicate_utterance_start"}),
+                }
+            return message
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        if payload.get("type") == "error" and payload.get("error_code") == "stream_disconnected":
+            return
+        forwarded = dict(payload)
+        forwarded["turn_id"] = self.turn_id
+        if forwarded.get("type") == "error":
+            forwarded["recoverable"] = True
+        if forwarded.get("type") == "done":
+            forwarded.update(
+                await _wait_for_skill_metadata(
+                    forwarded.get("session_id"),
+                    default_skill_name="idiom_game",
+                    timeout_seconds=float(settings.request_timeout_seconds) + 1.0,
+                )
+            )
+            forwarded.setdefault("audio_stream_url", None)
+        await self._websocket.send_json(forwarded)
+
+    async def close(self, code: int = 1000) -> None:
+        del code
+        return None
+
+
+@router.websocket("/api/v5/realtime/idiom-game/opus-stream")
+async def stream_idiom_game_session(
+    websocket: WebSocket,
+    x_device_id: str = Header(default="esp-idiom-game-001"),
+    x_audio_packetization: str = Header(default="framed-v1"),
+    x_audio_format: str = Header(default="opus"),
+    x_opus_sample_rate: int = Header(default=settings.realtime_audio_opus_sample_rate),
+    x_opus_channels: int = Header(default=settings.realtime_audio_opus_channels),
+    x_opus_frame_duration_ms: int = Header(default=settings.realtime_audio_opus_frame_duration_ms),
+) -> None:
+    await websocket.accept()
+    if x_audio_packetization != "framed-v1":
+        await _send_stream_error(websocket, "invalid_packetization", close_code=1008)
+        return
+    if x_audio_format != "opus":
+        await _send_stream_error(websocket, "invalid_audio_format", close_code=1008)
+        return
+
+    while True:
+        message = await websocket.receive()
+        if message.get("type") == "websocket.disconnect":
+            return
+        if message.get("bytes") is not None:
+            await _send_idiom_stream_error(websocket, "idle_binary_audio")
+            continue
+        message_text = message.get("text")
+        if message_text is None:
+            continue
+        try:
+            control = json.loads(message_text)
+        except json.JSONDecodeError:
+            await _send_idiom_stream_error(websocket, "invalid_control_json")
+            continue
+        if control.get("type") != "utterance_start":
+            await _send_idiom_stream_error(
+                websocket,
+                "idle_control_message",
+                turn_id=str(control.get("turn_id") or "") or None,
+            )
+            continue
+        turn_id = str(control.get("turn_id") or "").strip()
+        if not turn_id:
+            await _send_idiom_stream_error(websocket, "missing_turn_id")
+            continue
+        start_control = {
+            "type": "start",
+            "run_asr": True,
+            "run_full_chain": True,
+            "answer_mode": str(control.get("answer_mode") or "short"),
+        }
+        for key in ("asr_provider", "asr_fallback_provider"):
+            if control.get(key) is not None:
+                start_control[key] = control[key]
+        turn_websocket = _IdiomTurnWebSocket(websocket, turn_id, start_control)
+        await stream_opus_realtime_session(
+            turn_websocket,
+            x_device_id=x_device_id,
+            x_audio_packetization=x_audio_packetization,
+            x_audio_format=x_audio_format,
+            x_opus_sample_rate=x_opus_sample_rate,
+            x_opus_channels=x_opus_channels,
+            x_opus_frame_duration_ms=x_opus_frame_duration_ms,
+            x_original_pcm_bytes=None,
+        )
+        if turn_websocket.disconnected:
+            return
 
 
 @router.get("/api/v3/realtime/sessions/{session_id}", response_model=RealtimeSessionStatusResponse)

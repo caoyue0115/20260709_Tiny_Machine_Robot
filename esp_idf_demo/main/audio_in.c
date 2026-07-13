@@ -67,6 +67,64 @@ static uint32_t audio_in_avg_abs_pcm16_le(const uint8_t *pcm, size_t pcm_bytes)
     return (uint32_t)(sum_abs / sample_count);
 }
 
+#define AUDIO_IN_GAME_PREROLL_BYTES \
+    ((DEMO_AUDIO_SAMPLE_RATE * AUDIO_IN_GAME_PREROLL_MS / 1000) * \
+     DEMO_AUDIO_CHANNELS * DEMO_AUDIO_BYTES_PER_SAMPLE)
+#define AUDIO_IN_GAME_TRAILING_SILENCE_BYTES \
+    ((DEMO_AUDIO_SAMPLE_RATE * AUDIO_IN_GAME_TRAILING_SILENCE_MS / 1000) * \
+     DEMO_AUDIO_CHANNELS * DEMO_AUDIO_BYTES_PER_SAMPLE)
+
+static void audio_in_game_preroll_ring_write(uint8_t *game_preroll_ring,
+                                             size_t capacity,
+                                             size_t *write_offset,
+                                             size_t *valid_bytes,
+                                             const uint8_t *chunk,
+                                             size_t chunk_bytes)
+{
+    if (game_preroll_ring == NULL || capacity == 0 || write_offset == NULL ||
+        valid_bytes == NULL || chunk == NULL || chunk_bytes == 0) {
+        return;
+    }
+    if (chunk_bytes >= capacity) {
+        memcpy(game_preroll_ring, chunk + chunk_bytes - capacity, capacity);
+        *write_offset = 0;
+        *valid_bytes = capacity;
+        return;
+    }
+    const size_t first = (capacity - *write_offset) < chunk_bytes
+                             ? (capacity - *write_offset)
+                             : chunk_bytes;
+    memcpy(game_preroll_ring + *write_offset, chunk, first);
+    if (chunk_bytes > first) {
+        memcpy(game_preroll_ring, chunk + first, chunk_bytes - first);
+    }
+    *write_offset = (*write_offset + chunk_bytes) % capacity;
+    *valid_bytes = (*valid_bytes + chunk_bytes) < capacity
+                       ? (*valid_bytes + chunk_bytes)
+                       : capacity;
+}
+
+static uint8_t *audio_in_game_preroll_ring_snapshot(const uint8_t *game_preroll_ring,
+                                                    size_t capacity,
+                                                    size_t write_offset,
+                                                    size_t valid_bytes)
+{
+    if (game_preroll_ring == NULL || valid_bytes == 0 || valid_bytes > capacity) {
+        return NULL;
+    }
+    uint8_t *snapshot = malloc(valid_bytes);
+    if (snapshot == NULL) {
+        return NULL;
+    }
+    const size_t start = (write_offset + capacity - valid_bytes) % capacity;
+    const size_t first = (capacity - start) < valid_bytes ? (capacity - start) : valid_bytes;
+    memcpy(snapshot, game_preroll_ring + start, first);
+    if (valid_bytes > first) {
+        memcpy(snapshot + first, game_preroll_ring, valid_bytes - first);
+    }
+    return snapshot;
+}
+
 static esp_err_t audio_in_init_locked(void)
 {
     if (s_audio_in_state.initialized) {
@@ -365,6 +423,95 @@ esp_err_t audio_in_wait_for_speech_start(uint8_t **out_speech_prefix,
     return DEMO_AUDIO_IN_ERR_WAIT_TIMEOUT;
 }
 
+esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
+                                              size_t *out_speech_prefix_bytes,
+                                              audio_in_wait_metrics_t *out_metrics)
+{
+    if (out_speech_prefix == NULL || out_speech_prefix_bytes == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_speech_prefix = NULL;
+    *out_speech_prefix_bytes = 0;
+    if (out_metrics != NULL) {
+        memset(out_metrics, 0, sizeof(*out_metrics));
+    }
+
+    esp_err_t ret = audio_in_open_locked();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    uint8_t *chunk = malloc(DEMO_AUDIO_CHUNK_BYTES);
+    uint8_t *game_preroll_ring = malloc(AUDIO_IN_GAME_PREROLL_BYTES);
+    if (chunk == NULL || game_preroll_ring == NULL) {
+        free(chunk);
+        free(game_preroll_ring);
+        audio_in_close_locked();
+        return ESP_ERR_NO_MEM;
+    }
+
+    const int64_t wait_start_us = esp_timer_get_time();
+    const int64_t timeout_at_us =
+        wait_start_us + (int64_t)DEMO_WAIT_FOR_SPEECH_TIMEOUT_MS * 1000;
+    size_t ring_write_offset = 0;
+    size_t ring_valid_bytes = 0;
+    uint32_t max_level = 0;
+
+    while (esp_timer_get_time() < timeout_at_us) {
+        ret = audio_in_read_chunk(chunk, DEMO_AUDIO_CHUNK_BYTES);
+        if (ret != ESP_OK) {
+            free(chunk);
+            free(game_preroll_ring);
+            audio_in_close_locked();
+            return ret;
+        }
+        audio_in_game_preroll_ring_write(game_preroll_ring,
+                                         AUDIO_IN_GAME_PREROLL_BYTES,
+                                         &ring_write_offset,
+                                         &ring_valid_bytes,
+                                         chunk,
+                                         DEMO_AUDIO_CHUNK_BYTES);
+        const uint32_t chunk_level = audio_in_avg_abs_pcm16_le(chunk, DEMO_AUDIO_CHUNK_BYTES);
+        if (chunk_level > max_level) {
+            max_level = chunk_level;
+        }
+        if (chunk_level < DEMO_WAITING_SPEECH_START_THRESHOLD) {
+            continue;
+        }
+
+        uint8_t *snapshot = audio_in_game_preroll_ring_snapshot(game_preroll_ring,
+                                                                 AUDIO_IN_GAME_PREROLL_BYTES,
+                                                                 ring_write_offset,
+                                                                 ring_valid_bytes);
+        if (snapshot == NULL) {
+            free(chunk);
+            free(game_preroll_ring);
+            audio_in_close_locked();
+            return ESP_ERR_NO_MEM;
+        }
+        if (out_metrics != NULL) {
+            out_metrics->elapsed_ms =
+                (uint32_t)((esp_timer_get_time() - wait_start_us) / 1000);
+            out_metrics->max_level = max_level;
+            out_metrics->speech_prefix_bytes = ring_valid_bytes;
+        }
+        *out_speech_prefix = snapshot;
+        *out_speech_prefix_bytes = ring_valid_bytes;
+        free(chunk);
+        free(game_preroll_ring);
+        return ESP_OK;
+    }
+
+    if (out_metrics != NULL) {
+        out_metrics->elapsed_ms =
+            (uint32_t)((esp_timer_get_time() - wait_start_us) / 1000);
+        out_metrics->max_level = max_level;
+    }
+    free(chunk);
+    free(game_preroll_ring);
+    audio_in_close_locked();
+    return DEMO_AUDIO_IN_ERR_WAIT_TIMEOUT;
+}
+
 esp_err_t audio_in_record_after_speech_start(const uint8_t *speech_prefix,
                                              size_t speech_prefix_bytes,
                                              uint8_t **out_buffer,
@@ -479,6 +626,78 @@ esp_err_t audio_in_stream_after_speech_start(const uint8_t *speech_prefix,
              (unsigned)max_chunk_level);
     free(chunk);
     return ESP_OK;
+}
+
+esp_err_t audio_in_stream_game_after_speech_start(const uint8_t *speech_prefix,
+                                                  size_t speech_prefix_bytes,
+                                                  audio_in_pcm_chunk_callback_t callback,
+                                                  void *user_ctx,
+                                                  audio_in_record_metrics_t *out_metrics)
+{
+    if (callback == NULL || speech_prefix == NULL || speech_prefix_bytes == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_audio_in_state.opened || s_audio_in_state.mic_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (out_metrics != NULL) {
+        memset(out_metrics, 0, sizeof(*out_metrics));
+    }
+
+    uint8_t *chunk = malloc(DEMO_AUDIO_CHUNK_BYTES);
+    if (chunk == NULL) {
+        audio_in_close_locked();
+        return ESP_ERR_NO_MEM;
+    }
+    const int64_t start_us = esp_timer_get_time();
+    uint32_t max_chunk_level = audio_in_avg_abs_pcm16_le(speech_prefix, speech_prefix_bytes);
+    size_t pcm_bytes = 0;
+    size_t trailing_silence_bytes = 0;
+    bool vad_stopped = false;
+
+    esp_err_t ret = callback(speech_prefix, speech_prefix_bytes, user_ctx);
+    if (ret == ESP_OK) {
+        pcm_bytes = speech_prefix_bytes;
+    }
+    while (ret == ESP_OK && pcm_bytes < DEMO_AUDIO_BUFFER_BYTES) {
+        const size_t chunk_bytes =
+            (DEMO_AUDIO_BUFFER_BYTES - pcm_bytes) > DEMO_AUDIO_CHUNK_BYTES
+                ? DEMO_AUDIO_CHUNK_BYTES
+                : (DEMO_AUDIO_BUFFER_BYTES - pcm_bytes);
+        ret = audio_in_read_chunk(chunk, chunk_bytes);
+        if (ret != ESP_OK) {
+            break;
+        }
+        ret = callback(chunk, chunk_bytes, user_ctx);
+        if (ret != ESP_OK) {
+            break;
+        }
+        pcm_bytes += chunk_bytes;
+        const uint32_t chunk_level = audio_in_avg_abs_pcm16_le(chunk, chunk_bytes);
+        if (chunk_level > max_chunk_level) {
+            max_chunk_level = chunk_level;
+        }
+        if (chunk_level <= DEMO_RECORD_VAD_SILENCE_THRESHOLD) {
+            trailing_silence_bytes += chunk_bytes;
+        } else {
+            trailing_silence_bytes = 0;
+        }
+        if (trailing_silence_bytes >= AUDIO_IN_GAME_TRAILING_SILENCE_BYTES) {
+            vad_stopped = true;
+            break;
+        }
+    }
+
+    audio_in_close_locked();
+    free(chunk);
+    if (out_metrics != NULL) {
+        out_metrics->vad_stopped = vad_stopped;
+        out_metrics->voice_started = true;
+        out_metrics->max_level = max_chunk_level;
+        out_metrics->elapsed_ms = (uint32_t)((esp_timer_get_time() - start_us) / 1000);
+        out_metrics->pcm_bytes = pcm_bytes;
+    }
+    return ret;
 }
 
 void audio_in_deinit(void)

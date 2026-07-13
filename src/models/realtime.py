@@ -9,6 +9,9 @@ class RealtimeTrace(BaseModel):
     asr_ms: int | None = None
     retrieval_ms: int | None = None
     skill_name: str | None = None
+    skill_route_complete: bool = False
+    skill_active: bool | None = None
+    end_skill_state: bool | None = None
     skill_route_ms: int | None = None
     static_audio_used: bool | None = None
     static_audio_missing: bool | None = None

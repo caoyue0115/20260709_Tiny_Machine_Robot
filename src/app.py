@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from redis import Redis
 
@@ -12,8 +14,17 @@ from src.providers.llm import llm_health
 from src.providers.tts import tts_health
 from src.settings import settings
 from src.storage.db import init_db, sqlite_ok
+from src.voice_skills.idiom_audio import initialize_idiom_audio_catalog
 
-app = FastAPI(title=settings.project_name, version=settings.version)
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    if "idiom_game" in {part.strip() for part in settings.enabled_skills.split(",")}:
+        initialize_idiom_audio_catalog()
+    yield
+
+
+app = FastAPI(title=settings.project_name, version=settings.version, lifespan=_app_lifespan)
 init_db()
 app.include_router(tasks_router)
 app.include_router(realtime_router)

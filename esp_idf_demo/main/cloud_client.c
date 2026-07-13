@@ -130,6 +130,9 @@ struct cloud_opus_uplink {
     volatile bool disconnected;
     volatile bool error_received;
     volatile bool done_received;
+    bool persistent_game;
+    bool turn_active;
+    char turn_id[64];
     cloud_realtime_session_t session;
     char ws_url[320];
     char ws_headers[640];
@@ -1517,7 +1520,22 @@ static void cloud_opus_uplink_handle_json(cloud_opus_uplink_t *uplink, const cha
     }
 
     char type[32] = {0};
+    char incoming_turn_id[64] = {0};
     cloud_opus_uplink_copy_optional_string(root, "type", type, sizeof(type));
+    cloud_opus_uplink_copy_optional_string(root,
+                                           "turn_id",
+                                           incoming_turn_id,
+                                           sizeof(incoming_turn_id));
+    if (uplink->persistent_game && uplink->turn_id[0] != '\0' &&
+        strcmp(incoming_turn_id, uplink->turn_id) != 0) {
+        ESP_LOGW(TAG,
+                 "idiom_game_ws stale_turn_id expected=%s incoming=%s type=%s",
+                 uplink->turn_id,
+                 incoming_turn_id[0] != '\0' ? incoming_turn_id : "(empty)",
+                 type);
+        cJSON_Delete(root);
+        return;
+    }
     const int64_t now_us = esp_timer_get_time();
 
     if (strcmp(type, "ack") == 0) {
@@ -1555,6 +1573,15 @@ static void cloud_opus_uplink_handle_json(cloud_opus_uplink_t *uplink, const cha
         cloud_opus_uplink_copy_optional_string(root, "audio_stream_url",
                                                uplink->session.audio_stream_url,
                                                sizeof(uplink->session.audio_stream_url));
+        cloud_opus_uplink_copy_optional_string(root, "turn_id",
+                                               uplink->session.turn_id,
+                                               sizeof(uplink->session.turn_id));
+        cloud_opus_uplink_copy_optional_string(root, "skill_name",
+                                               uplink->session.skill_name,
+                                               sizeof(uplink->session.skill_name));
+        uplink->session.skill_active = cloud_json_get_bool_default(root, "skill_active", false);
+        uplink->session.end_skill_state =
+            cloud_json_get_bool_default(root, "end_skill_state", false);
         snprintf(uplink->session.status, sizeof(uplink->session.status), "%s", "done");
     } else if (strcmp(type, "error") == 0) {
         uplink->error_received = true;
@@ -1765,8 +1792,10 @@ static esp_err_t cloud_opus_uplink_wait_connected(cloud_opus_uplink_t *uplink)
     return ESP_OK;
 }
 
-esp_err_t cloud_client_opus_uplink_begin(cloud_opus_uplink_t **out_uplink,
-                                         cloud_opus_uplink_metrics_t *metrics)
+static esp_err_t cloud_opus_uplink_connect(cloud_opus_uplink_t **out_uplink,
+                                           cloud_opus_uplink_metrics_t *metrics,
+                                           const char *ws_path,
+                                           bool send_legacy_start)
 {
     if (out_uplink == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -1793,7 +1822,7 @@ esp_err_t cloud_client_opus_uplink_begin(cloud_opus_uplink_t **out_uplink,
         return ret;
     }
 
-    ret = cloud_build_ws_url(uplink->ws_url, sizeof(uplink->ws_url), "api/v5/realtime/opus-stream");
+    ret = cloud_build_ws_url(uplink->ws_url, sizeof(uplink->ws_url), ws_path);
     if (ret != ESP_OK) {
         if (metrics != NULL) {
             snprintf(metrics->error_code, sizeof(metrics->error_code), "%s", "websocket_url_build_failed");
@@ -1862,6 +1891,11 @@ esp_err_t cloud_client_opus_uplink_begin(cloud_opus_uplink_t **out_uplink,
              "v5_uplink ws_connect_done elapsed_ms=%.1f",
              metrics != NULL ? (double)metrics->ws_connect_elapsed_us / 1000.0 : -1.0);
 
+    if (!send_legacy_start) {
+        *out_uplink = uplink;
+        return ESP_OK;
+    }
+
     char start_json[192];
     const int written = snprintf(start_json,
                                  sizeof(start_json),
@@ -1886,6 +1920,15 @@ esp_err_t cloud_client_opus_uplink_begin(cloud_opus_uplink_t **out_uplink,
 
     *out_uplink = uplink;
     return ESP_OK;
+}
+
+esp_err_t cloud_client_opus_uplink_begin(cloud_opus_uplink_t **out_uplink,
+                                         cloud_opus_uplink_metrics_t *metrics)
+{
+    return cloud_opus_uplink_connect(out_uplink,
+                                     metrics,
+                                     "api/v5/realtime/opus-stream",
+                                     true);
 }
 
 esp_err_t cloud_client_opus_uplink_send_pcm(cloud_opus_uplink_t *uplink,
@@ -2020,6 +2063,150 @@ void cloud_client_opus_uplink_abort(cloud_opus_uplink_t *uplink)
     free(uplink->opus_frame);
     free(uplink->ws_frame);
     free(uplink);
+}
+
+esp_err_t cloud_client_idiom_game_connect(cloud_idiom_game_client_t **out_client,
+                                          cloud_opus_uplink_metrics_t *metrics)
+{
+    esp_err_t ret = cloud_opus_uplink_connect(out_client,
+                                              metrics,
+                                              "api/v5/realtime/idiom-game/opus-stream",
+                                              false);
+    if (ret == ESP_OK && *out_client != NULL) {
+        (*out_client)->persistent_game = true;
+    }
+    return ret;
+}
+
+esp_err_t cloud_client_idiom_game_begin_turn(cloud_idiom_game_client_t *client,
+                                             const char *turn_id)
+{
+    if (client == NULL || turn_id == NULL || turn_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!client->persistent_game || client->turn_active ||
+        !esp_websocket_client_is_connected(client->client)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    memset(&client->session, 0, sizeof(client->session));
+    client->done_received = false;
+    client->error_received = false;
+    client->disconnected = false;
+    client->sequence = 0;
+    client->pcm_frame_len = 0;
+    client->start_us = esp_timer_get_time();
+    snprintf(client->turn_id, sizeof(client->turn_id), "%s", turn_id);
+    if (client->metrics != NULL) {
+        memset(client->metrics, 0, sizeof(*client->metrics));
+        snprintf(client->metrics->asr_provider,
+                 sizeof(client->metrics->asr_provider),
+                 "%s",
+                 V5_OPUS_UPLINK_ASR_PROVIDER);
+    }
+
+    char start_json[256];
+    const int written = snprintf(start_json,
+                                 sizeof(start_json),
+                                 "{\"type\":\"utterance_start\",\"turn_id\":\"%s\","
+                                 "\"asr_provider\":\"%s\",\"answer_mode\":\"%s\"}",
+                                 client->turn_id,
+                                 V5_OPUS_UPLINK_ASR_PROVIDER,
+                                 V5_OPUS_UPLINK_ANSWER_MODE);
+    if (written < 0 || (size_t)written >= sizeof(start_json)) {
+        return ESP_ERR_NO_MEM;
+    }
+    const int sent = esp_websocket_client_send_text(
+        client->client,
+        start_json,
+        written,
+        pdMS_TO_TICKS(V5_OPUS_UPLINK_WS_SEND_TIMEOUT_MS));
+    if (sent != written) {
+        return ESP_FAIL;
+    }
+    client->turn_active = true;
+    ESP_LOGI(TAG, "idiom_game_ws utterance_start turn_id=%s", client->turn_id);
+    return ESP_OK;
+}
+
+esp_err_t cloud_client_idiom_game_send_pcm(cloud_idiom_game_client_t *client,
+                                           const uint8_t *pcm,
+                                           size_t pcm_bytes)
+{
+    if (client == NULL || !client->turn_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return cloud_client_opus_uplink_send_pcm(client, pcm, pcm_bytes);
+}
+
+esp_err_t cloud_client_idiom_game_finish_turn(cloud_idiom_game_client_t *client,
+                                              const char *turn_id,
+                                              cloud_realtime_session_t *session)
+{
+    if (client == NULL || turn_id == NULL || session == NULL || !client->turn_active ||
+        strcmp(turn_id, client->turn_id) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (client->pcm_frame_len > 0) {
+        memset(client->pcm_frame + client->pcm_frame_len,
+               0,
+               client->pcm_frame_size - client->pcm_frame_len);
+        client->pcm_frame_len = client->pcm_frame_size;
+        esp_err_t flush_ret = cloud_opus_uplink_send_current_frame(client);
+        if (flush_ret != ESP_OK) {
+            client->turn_active = false;
+            return flush_ret;
+        }
+    }
+
+    char end_json[160];
+    const int written = snprintf(end_json,
+                                 sizeof(end_json),
+                                 "{\"type\":\"utterance_end\",\"turn_id\":\"%s\"}",
+                                 client->turn_id);
+    if (written < 0 || (size_t)written >= sizeof(end_json)) {
+        client->turn_active = false;
+        return ESP_ERR_NO_MEM;
+    }
+    const int sent = esp_websocket_client_send_text(
+        client->client,
+        end_json,
+        written,
+        pdMS_TO_TICKS(V5_OPUS_UPLINK_WS_SEND_TIMEOUT_MS));
+    if (sent != written) {
+        client->turn_active = false;
+        return ESP_FAIL;
+    }
+    if (client->metrics != NULL) {
+        client->metrics->end_sent_us = esp_timer_get_time() - client->start_us;
+    }
+    client->turn_active = false;
+    ESP_LOGI(TAG, "idiom_game_ws utterance_end turn_id=%s", client->turn_id);
+
+    const int64_t wait_start_us = esp_timer_get_time();
+    while (!client->done_received && !client->error_received && !client->disconnected &&
+           (esp_timer_get_time() - wait_start_us) <
+               ((int64_t)V5_OPUS_UPLINK_WS_DONE_TIMEOUT_MS * 1000)) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (!client->done_received) {
+        if (client->metrics != NULL && client->metrics->error_code[0] == '\0') {
+            snprintf(client->metrics->error_code,
+                     sizeof(client->metrics->error_code),
+                     "%s",
+                     client->error_received ? "websocket_server_error" : "websocket_done_timeout");
+        }
+        return client->error_received ? ESP_FAIL : ESP_ERR_TIMEOUT;
+    }
+    if (client->session.audio_stream_url[0] == '\0') {
+        return DEMO_CLOUD_ERR_INVALID_RESPONSE;
+    }
+    *session = client->session;
+    return ESP_OK;
+}
+
+void cloud_client_idiom_game_close(cloud_idiom_game_client_t *client)
+{
+    cloud_client_opus_uplink_abort(client);
 }
 
 esp_err_t cloud_client_fetch_ota_manifest(const char *board,

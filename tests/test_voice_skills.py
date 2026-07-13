@@ -21,6 +21,25 @@ def _write_wav(path: Path, pcm: bytes = b"\x01\x00\x02\x00") -> None:
 
 
 class VoiceSkillRouterTests(unittest.TestCase):
+    @staticmethod
+    def _build_small_router(*, judge_unknown_idiom=None):
+        from src.voice_skills.idiom_game import IdiomEntry, IdiomGameSkill, InMemoryIdiomGameStore
+        from src.voice_skills.router import SkillRouter
+
+        store = InMemoryIdiomGameStore()
+        skill = IdiomGameSkill(
+            [
+                IdiomEntry(word="画龙点睛", first_py="hua", last_py="jing"),
+                IdiomEntry(word="精卫填海", first_py="jing", last_py="hai"),
+                IdiomEntry(word="海阔天空", first_py="hai", last_py="kong"),
+                IdiomEntry(word="国泰民安", first_py="guo", last_py="an"),
+            ],
+            store=store,
+            opening_words=["画龙点睛"],
+            judge_unknown_idiom=judge_unknown_idiom,
+        )
+        return SkillRouter(idiom_skill=skill, enabled_skills="idiom_game"), store
+
     def test_router_returns_none_for_regular_coffee_question(self) -> None:
         from src.voice_skills.idiom_game import IdiomGameSkill, InMemoryIdiomGameStore, load_default_idioms
         from src.voice_skills.router import SkillRouter
@@ -49,8 +68,320 @@ class VoiceSkillRouterTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.skill_name, "idiom_game")
         self.assertIn("小机仔先来", result.answer_text or "")
-        self.assertIsNotNone(result.audio_plan)
-        self.assertGreaterEqual(len(result.audio_plan or []), 4)
+        self.assertEqual(len(result.audio_plan or []), 3)
+
+    def test_start_reply_and_audio_plan_stop_after_opening_idiom(self) -> None:
+        router, store = self._build_small_router()
+
+        result = router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.answer_text, "好呀，我们玩成语接龙。小机仔先来：画龙点睛。")
+        self.assertEqual(
+            result.audio_plan,
+            ["idiom_game/start", "idiom_game/robot_first", "idioms/画龙点睛"],
+        )
+        state = store.get("esp-1")
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state.last_robot_word, "画龙点睛")
+
+    def test_legacy_normal_reply_text_also_builds_idiom_only_plan(self) -> None:
+        from src.voice_skills.idiom_game import build_idiom_audio_plan
+
+        self.assertEqual(
+            build_idiom_audio_plan("小机仔接：海阔天空。轮到你啦，要接“kong”。"),
+            ["idioms/海阔天空"],
+        )
+
+    def test_start_with_difficulty_keeps_the_same_fixed_opening(self) -> None:
+        router, store = self._build_small_router()
+
+        result = router.route(
+            device_id="esp-1",
+            text="简单模式开始成语接龙",
+            answer_mode="short",
+            trace={},
+        )
+
+        assert result is not None
+        self.assertEqual(result.answer_text, "好呀，我们玩成语接龙。小机仔先来：画龙点睛。")
+        self.assertEqual(
+            result.audio_plan,
+            ["idiom_game/start", "idiom_game/robot_first", "idioms/画龙点睛"],
+        )
+        state = store.get("esp-1")
+        assert state is not None
+        self.assertEqual(state.robot_difficulty, "easy")
+
+    def test_all_existing_difficulty_switches_use_static_mode_audio(self) -> None:
+        cases = {
+            "简单模式": "idiom_game/mode_easy",
+            "普通模式": "idiom_game/mode_normal",
+            "困难模式": "idiom_game/mode_hard",
+            "大师模式": "idiom_game/mode_full",
+        }
+        for phrase, segment in cases.items():
+            with self.subTest(phrase=phrase):
+                router, _store = self._build_small_router()
+                router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+                result = router.route(device_id="esp-1", text=phrase, answer_mode="short", trace={})
+
+                assert result is not None
+                self.assertEqual(result.audio_plan, [segment])
+
+    def test_target_turn_win_uses_its_own_static_audio(self) -> None:
+        from src.voice_skills.idiom_game import IdiomEntry, IdiomGameSkill, InMemoryIdiomGameStore
+        from src.voice_skills.router import SkillRouter
+
+        router = SkillRouter(
+            idiom_skill=IdiomGameSkill(
+                [
+                    IdiomEntry("画龙点睛", "hua", "jing"),
+                    IdiomEntry("精卫填海", "jing", "hai"),
+                ],
+                store=InMemoryIdiomGameStore(),
+                opening_words=["画龙点睛"],
+                target_user_turns=1,
+            ),
+            enabled_skills="idiom_game",
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="精卫填海", answer_mode="short", trace={})
+
+        assert result is not None
+        self.assertTrue(result.end_skill_state)
+        self.assertEqual(result.audio_plan, ["idiom_game/challenge_win"])
+
+    def test_successful_turn_replies_with_only_the_next_idiom(self) -> None:
+        router, store = self._build_small_router()
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="精卫填海", answer_mode="short", trace={})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.answer_text, "海阔天空")
+        self.assertEqual(result.audio_plan, ["idioms/海阔天空"])
+        state = store.get("esp-1")
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state.last_robot_word, "海阔天空")
+
+    def test_no_robot_candidate_uses_only_static_concession_prompt(self) -> None:
+        from src.voice_skills.idiom_game import IdiomEntry, IdiomGameSkill, InMemoryIdiomGameStore
+        from src.voice_skills.router import SkillRouter
+
+        router = SkillRouter(
+            idiom_skill=IdiomGameSkill(
+                [
+                    IdiomEntry("画龙点睛", "hua", "jing"),
+                    IdiomEntry("精卫填海", "jing", "hai"),
+                ],
+                store=InMemoryIdiomGameStore(),
+                opening_words=["画龙点睛"],
+            ),
+            enabled_skills="idiom_game",
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="精卫填海", answer_mode="short", trace={})
+
+        assert result is not None
+        self.assertIn("小机仔暂时接不上啦", result.answer_text or "")
+        self.assertEqual(result.audio_plan, ["idiom_game/robot_no_reply_user_win"])
+
+    def test_repeated_idiom_explanation_does_not_require_idiom_audio(self) -> None:
+        router, _store = self._build_small_router()
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="画龙点睛", answer_mode="short", trace={})
+
+        assert result is not None
+        self.assertIn("刚刚用过啦", result.answer_text or "")
+        self.assertEqual(
+            result.audio_plan,
+            ["idiom_game/repeated_prefix", "idiom_game/repeated_suffix"],
+        )
+
+    def test_repeat_phrases_return_last_robot_word_without_advancing_state(self) -> None:
+        for phrase in ("没听清", "没听到", "再说一次", "重复一下", "刚才是什么"):
+            with self.subTest(phrase=phrase):
+                router, store = self._build_small_router()
+                router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+                before = store.get("esp-1")
+                assert before is not None
+                before_snapshot = (
+                    before.expected_py,
+                    set(before.used_words),
+                    before.valid_user_turns,
+                    before.robot_difficulty,
+                )
+
+                result = router.route(device_id="esp-1", text=phrase, answer_mode="short", trace={})
+
+                self.assertIsNotNone(result)
+                assert result is not None
+                self.assertEqual(result.answer_text, "画龙点睛")
+                self.assertEqual(result.audio_plan, ["idioms/画龙点睛"])
+                after = store.get("esp-1")
+                assert after is not None
+                self.assertEqual(
+                    (after.expected_py, after.used_words, after.valid_user_turns, after.robot_difficulty),
+                    before_snapshot,
+                )
+
+    def test_broad_exit_phrases_clear_state_before_idiom_lookup(self) -> None:
+        for phrase in ("退出", "不玩了", "结束游戏", "结束接龙", "先这样", "停止"):
+            with self.subTest(phrase=phrase):
+                router, store = self._build_small_router()
+                router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+                result = router.route(device_id="esp-1", text=phrase, answer_mode="short", trace={})
+
+                self.assertIsNotNone(result)
+                assert result is not None
+                self.assertTrue(result.end_skill_state)
+                self.assertEqual(result.audio_plan, ["idiom_game/exit"])
+                self.assertNotIn("成语词库", result.answer_text or "")
+                self.assertFalse(store.is_active("esp-1"))
+
+    def test_llm_exit_clears_state_without_dictionary_error(self) -> None:
+        from src.voice_skills.idiom_game import IdiomJudgeDecision
+
+        router, store = self._build_small_router(
+            judge_unknown_idiom=lambda _text, _expected: IdiomJudgeDecision(
+                intent="exit",
+                word="",
+                first_py="",
+                last_py="",
+                confidence=0.95,
+                is_idiom=False,
+                matches_expected_pinyin=False,
+            )
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="今天先到这儿吧", answer_mode="short", trace={})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.end_skill_state)
+        self.assertEqual(result.audio_plan, ["idiom_game/exit"])
+        self.assertNotIn("成语词库", result.answer_text or "")
+        self.assertFalse(store.is_active("esp-1"))
+
+    def test_llm_repeat_returns_last_robot_word_without_advancing(self) -> None:
+        from src.voice_skills.idiom_game import IdiomJudgeDecision
+
+        router, store = self._build_small_router(
+            judge_unknown_idiom=lambda _text, _expected: IdiomJudgeDecision(
+                intent="repeat",
+                word="",
+                first_py="",
+                last_py="",
+                confidence=0.95,
+                is_idiom=False,
+                matches_expected_pinyin=False,
+            )
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+        before = store.get("esp-1")
+        assert before is not None
+        before_snapshot = (before.expected_py, set(before.used_words), before.valid_user_turns)
+
+        result = router.route(device_id="esp-1", text="你刚刚讲的什么呀", answer_mode="short", trace={})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.answer_text, "画龙点睛")
+        self.assertEqual(result.audio_plan, ["idioms/画龙点睛"])
+        self.assertEqual(result.trace["idiom_llm_intent"], "repeat")
+        self.assertEqual(result.trace["idiom_llm_judge_confidence"], 0.95)
+        self.assertFalse(result.trace["idiom_llm_matches_expected_pinyin"])
+        after = store.get("esp-1")
+        assert after is not None
+        self.assertEqual((after.expected_py, after.used_words, after.valid_user_turns), before_snapshot)
+
+    def test_llm_idiom_requires_server_side_normalized_pinyin_validation(self) -> None:
+        from src.voice_skills.idiom_game import IdiomJudgeDecision
+
+        decisions = iter(
+            [
+                IdiomJudgeDecision(
+                    intent="idiom",
+                    word="精忠报国",
+                    first_py="hǎi",
+                    last_py="guó",
+                    confidence=0.95,
+                    is_idiom=True,
+                    matches_expected_pinyin=True,
+                ),
+                IdiomJudgeDecision(
+                    intent="idiom",
+                    word="精忠报国",
+                    first_py="jīng",
+                    last_py="guó",
+                    confidence=0.95,
+                    is_idiom=True,
+                    matches_expected_pinyin=False,
+                ),
+            ]
+        )
+        router, store = self._build_small_router(
+            judge_unknown_idiom=lambda _text, _expected: next(decisions)
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        rejected = router.route(device_id="esp-1", text="第一种未知表达", answer_mode="short", trace={})
+        accepted = router.route(device_id="esp-1", text="第二种未知表达", answer_mode="short", trace={})
+
+        assert rejected is not None
+        self.assertIn("换一个四字成语", rejected.answer_text or "")
+        assert accepted is not None
+        self.assertEqual(accepted.answer_text, "国泰民安")
+        state = store.get("esp-1")
+        assert state is not None
+        self.assertEqual(state.last_robot_word, "国泰民安")
+
+    def test_noise_only_game_input_does_not_call_llm(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def judge(text: str, expected_py: str):
+            calls.append((text, expected_py))
+            return None
+
+        for phrase in ("嗯", "啊啊", "呃", "……"):
+            with self.subTest(phrase=phrase):
+                router, _store = self._build_small_router(judge_unknown_idiom=judge)
+                router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+                result = router.route(device_id="esp-1", text=phrase, answer_mode="short", trace={})
+
+                assert result is not None
+                self.assertEqual(result.audio_plan, ["idiom_game/not_found"])
+        self.assertEqual(calls, [])
+
+    def test_llm_failure_uses_static_retry_without_advancing_state(self) -> None:
+        router, store = self._build_small_router(
+            judge_unknown_idiom=lambda _text, _expected: None
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+        before = store.get("esp-1")
+        assert before is not None
+        snapshot = (before.expected_py, set(before.used_words), before.valid_user_turns)
+
+        result = router.route(device_id="esp-1", text="今天先到这里吧", answer_mode="short", trace={})
+
+        assert result is not None
+        self.assertEqual(result.answer_text, "我没听清，请再说一次。")
+        self.assertEqual(result.audio_plan, ["idiom_game/retry"])
+        after = store.get("esp-1")
+        assert after is not None
+        self.assertEqual((after.expected_py, after.used_words, after.valid_user_turns), snapshot)
 
     def test_router_exits_active_idiom_game_for_multinet_exit_phrases(self) -> None:
         from src.voice_skills.idiom_game import IdiomGameSkill, InMemoryIdiomGameStore, load_default_idioms
@@ -128,12 +459,7 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            audio_plan = [
-                "idiom_game/robot_reply",
-                "idioms/国泰民安",
-                "idiom_game/turn_prompt",
-                "pinyin/an",
-            ]
+            audio_plan = ["idioms/国泰民安"]
             for index, segment_id in enumerate(audio_plan, start=1):
                 _write_wav(root / f"{segment_id}.wav", pcm=bytes([index, 0, index + 1, 0]))
 
@@ -150,7 +476,7 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
                     "route_voice_skill",
                     return_value=SkillResult(
                         skill_name="idiom_game",
-                        answer_text="小机仔接：国泰民安。轮到你啦，要接“an”。",
+                        answer_text="国泰民安",
                         audio_plan=audio_plan,
                         trace={"skill_name": "idiom_game"},
                     ),
@@ -174,9 +500,52 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
         self.assertEqual(updated["trace"]["static_audio_segment_count"], len(audio_plan))
         self.assertEqual(
             list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
-            [b"\x01\x00\x02\x00\x02\x00\x03\x00\x03\x00\x04\x00\x04\x00\x05\x00"],
+            [b"\x01\x00\x02\x00"],
         )
         stream_realtime_tts_chunks.assert_not_called()
+
+    def test_idiom_missing_plan_uses_static_error_without_dynamic_tts(self) -> None:
+        from src.services import realtime_session as realtime_session_service
+        from src.storage.realtime_store import InMemoryRealtimeSessionStore
+        from src.voice_skills.router import SkillResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_wav(root / "idiom_game" / "static_error.wav", pcm=b"\x05\x00\x06\x00")
+            store = InMemoryRealtimeSessionStore(base_url="http://testserver")
+            session = store.create_session(device_id="esp-1")
+            store.update_session(session["session_id"], question_text="不存在的成语素材")
+            original_static_audio_dir = realtime_session_service.settings.static_audio_dir
+            original_static_audio_enabled = realtime_session_service.settings.static_audio_enabled
+            try:
+                realtime_session_service.settings.static_audio_dir = str(root)
+                realtime_session_service.settings.static_audio_enabled = True
+                with mock.patch.object(
+                    realtime_session_service,
+                    "route_voice_skill",
+                    return_value=SkillResult(
+                        skill_name="idiom_game",
+                        answer_text="海阔天空",
+                        audio_plan=["idioms/海阔天空"],
+                        trace={"skill_name": "idiom_game"},
+                    ),
+                ), mock.patch.object(
+                    realtime_session_service,
+                    "_stream_answer_audio",
+                    side_effect=AssertionError("idiom mode must not call dynamic TTS"),
+                ):
+                    realtime_session_service.run_stub_realtime_session(store, session["session_id"])
+            finally:
+                realtime_session_service.settings.static_audio_dir = original_static_audio_dir
+                realtime_session_service.settings.static_audio_enabled = original_static_audio_enabled
+
+        updated = store.get_session(session["session_id"])
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["trace"]["static_audio_used"], True)
+        self.assertEqual(
+            list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
+            [b"\x05\x00\x06\x00"],
+        )
 
     def test_static_audio_paths_are_merged_before_session_audio_queue(self) -> None:
         from src.providers.static_audio import merge_static_audio_paths

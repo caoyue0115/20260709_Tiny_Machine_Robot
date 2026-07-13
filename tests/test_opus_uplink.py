@@ -620,6 +620,262 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         self.assertEqual(websocket.sent_json[-1]["error_code"], "framed_packet_truncated")
         self.assertEqual(websocket.close_code, 1003)
 
+    def test_persistent_idiom_websocket_completes_two_turns_without_closing(self) -> None:
+        from src.api import realtime as realtime_api
+
+        pcm = b"\x00\x00" * 960
+        inner_packets = [b"encoded-opus"]
+        incoming: list[dict] = []
+        for turn_id in ("turn-1", "turn-2"):
+            incoming.append(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "utterance_start", "turn_id": turn_id}),
+                }
+            )
+            incoming.extend(
+                {
+                    "type": "websocket.receive",
+                    "bytes": _outer_frame(index, packet),
+                }
+                for index, packet in enumerate(inner_packets)
+            )
+            incoming.append(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "utterance_end", "turn_id": turn_id}),
+                }
+            )
+        incoming.append({"type": "websocket.disconnect"})
+        websocket = _FakeWebSocket(incoming)
+        adapters = [
+            _FakeStreamingAsrAdapter(text="精卫填海", request_id="asr-1"),
+            _FakeStreamingAsrAdapter(text="退出游戏", request_id="asr-2"),
+        ]
+        skill_states = iter([(True, False), (False, True)])
+
+        def finish_skill_session(store, session_id, _question_text, *, answer_mode=None):
+            del answer_mode
+            skill_active, end_skill_state = next(skill_states)
+            session = store.get_session(session_id)
+            assert session is not None
+            trace = dict(session["trace"])
+            trace.update(
+                {
+                    "skill_name": "idiom_game",
+                    "skill_active": skill_active,
+                    "end_skill_state": end_skill_state,
+                }
+            )
+            store.update_session(session_id, trace=trace)
+
+        with mock.patch.object(
+            realtime_api,
+            "create_realtime_asr_session",
+            side_effect=adapters,
+        ) as create_asr, mock.patch.object(
+            realtime_api,
+            "start_realtime_session_from_question",
+            side_effect=finish_skill_session,
+        ), mock.patch.object(
+            realtime_api, "LibOpusDecoder", return_value=mock.Mock(close=mock.Mock())
+        ), mock.patch.object(
+            realtime_api, "_decode_stream_opus_payload", return_value=(pcm, 16)
+        ):
+            asyncio.run(
+                realtime_api.stream_idiom_game_session(
+                    websocket,
+                    x_device_id="esp-idiom",
+                    x_audio_packetization="framed-v1",
+                    x_audio_format="opus",
+                    x_opus_sample_rate=16000,
+                    x_opus_channels=1,
+                    x_opus_frame_duration_ms=60,
+                )
+            )
+
+        self.assertTrue(websocket.accepted)
+        self.assertEqual(create_asr.call_count, 2)
+        asr_final = [item for item in websocket.sent_json if item["type"] == "asr_final"]
+        done = [item for item in websocket.sent_json if item["type"] == "done"]
+        self.assertEqual([item["turn_id"] for item in asr_final[-2:]], ["turn-1", "turn-2"])
+        self.assertEqual([item["turn_id"] for item in done], ["turn-1", "turn-2"])
+        self.assertEqual(done[0]["skill_name"], "idiom_game")
+        self.assertTrue(done[0]["skill_active"])
+        self.assertFalse(done[0]["end_skill_state"])
+        self.assertFalse(done[1]["skill_active"])
+        self.assertTrue(done[1]["end_skill_state"])
+        self.assertTrue(all("audio_stream_url" in item for item in done))
+        self.assertIsNone(websocket.close_code)
+
+    def test_single_turn_done_reports_idiom_state_when_asr_starts_game(self) -> None:
+        from src.api import realtime as realtime_api
+
+        pcm = b"\x00\x00" * 960
+        websocket = _FakeWebSocket(
+            [
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "start", "run_asr": True, "run_full_chain": True}),
+                },
+                {
+                    "type": "websocket.receive",
+                    "bytes": _outer_frame(0, b"encoded-opus"),
+                },
+                {"type": "websocket.receive", "text": json.dumps({"type": "end"})},
+            ]
+        )
+        fake_asr = _FakeStreamingAsrAdapter(text="开始成语接龙", request_id="asr-start-game")
+
+        def finish_skill_session(store, session_id, _question_text, *, answer_mode=None):
+            del answer_mode
+            session = store.get_session(session_id)
+            assert session is not None
+            trace = dict(session["trace"])
+            trace.update(
+                {
+                    "skill_route_complete": True,
+                    "skill_name": "idiom_game",
+                    "skill_active": True,
+                    "end_skill_state": False,
+                }
+            )
+            store.update_session(session_id, trace=trace)
+
+        with mock.patch.object(
+            realtime_api, "create_realtime_asr_session", return_value=fake_asr
+        ), mock.patch.object(
+            realtime_api,
+            "start_realtime_session_from_question",
+            side_effect=finish_skill_session,
+        ), mock.patch.object(
+            realtime_api, "LibOpusDecoder", return_value=mock.Mock(close=mock.Mock())
+        ), mock.patch.object(
+            realtime_api, "_decode_stream_opus_payload", return_value=(pcm, 16)
+        ):
+            asyncio.run(
+                realtime_api.stream_opus_realtime_session(
+                    websocket,
+                    x_device_id="esp-asr-start",
+                    x_audio_packetization="framed-v1",
+                    x_audio_format="opus",
+                    x_opus_sample_rate=16000,
+                    x_opus_channels=1,
+                    x_opus_frame_duration_ms=60,
+                    x_original_pcm_bytes=len(pcm),
+                )
+            )
+
+        done = websocket.sent_json[-1]
+        self.assertEqual(done["type"], "done")
+        self.assertEqual(done["skill_name"], "idiom_game")
+        self.assertTrue(done["skill_active"])
+        self.assertFalse(done["end_skill_state"])
+        self.assertEqual(websocket.close_code, 1000)
+
+    def test_persistent_idiom_websocket_idle_messages_do_not_create_asr_or_close(self) -> None:
+        from src.api import realtime as realtime_api
+
+        websocket = _FakeWebSocket(
+            [
+                {"type": "websocket.receive", "bytes": b"late"},
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "utterance_end", "turn_id": "old-turn"}),
+                },
+                {"type": "websocket.disconnect"},
+            ]
+        )
+
+        with mock.patch.object(realtime_api, "create_realtime_asr_session") as create_asr:
+            asyncio.run(
+                realtime_api.stream_idiom_game_session(
+                    websocket,
+                    x_device_id="esp-idiom",
+                    x_audio_packetization="framed-v1",
+                    x_audio_format="opus",
+                    x_opus_sample_rate=16000,
+                    x_opus_channels=1,
+                    x_opus_frame_duration_ms=60,
+                )
+            )
+
+        create_asr.assert_not_called()
+        errors = [item for item in websocket.sent_json if item["type"] == "error"]
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all(item["recoverable"] for item in errors))
+        self.assertIsNone(websocket.close_code)
+
+    def test_persistent_idiom_websocket_recovers_after_turn_decode_error(self) -> None:
+        from src.api import realtime as realtime_api
+
+        pcm = b"\x00\x00" * 960
+        inner_packet = b"encoded-opus"
+        websocket = _FakeWebSocket(
+            [
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "utterance_start", "turn_id": "bad-turn"}),
+                },
+                {"type": "websocket.receive", "bytes": b"\x00\x00"},
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "utterance_start", "turn_id": "good-turn"}),
+                },
+                {"type": "websocket.receive", "bytes": _outer_frame(0, inner_packet)},
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "utterance_end", "turn_id": "good-turn"}),
+                },
+                {"type": "websocket.disconnect"},
+            ]
+        )
+        adapters = [
+            _FakeStreamingAsrAdapter(text="不会完成", request_id="bad-asr"),
+            _FakeStreamingAsrAdapter(text="精卫填海", request_id="good-asr"),
+        ]
+
+        def finish_skill_session(store, session_id, _question_text, *, answer_mode=None):
+            del answer_mode
+            session = store.get_session(session_id)
+            assert session is not None
+            trace = dict(session["trace"])
+            trace.update(
+                {"skill_name": "idiom_game", "skill_active": True, "end_skill_state": False}
+            )
+            store.update_session(session_id, trace=trace)
+
+        with mock.patch.object(
+            realtime_api, "create_realtime_asr_session", side_effect=adapters
+        ), mock.patch.object(
+            realtime_api,
+            "start_realtime_session_from_question",
+            side_effect=finish_skill_session,
+        ), mock.patch.object(
+            realtime_api, "LibOpusDecoder", return_value=mock.Mock(close=mock.Mock())
+        ), mock.patch.object(
+            realtime_api, "_decode_stream_opus_payload", return_value=(pcm, 16)
+        ):
+            asyncio.run(
+                realtime_api.stream_idiom_game_session(
+                    websocket,
+                    x_device_id="esp-idiom",
+                    x_audio_packetization="framed-v1",
+                    x_audio_format="opus",
+                    x_opus_sample_rate=16000,
+                    x_opus_channels=1,
+                    x_opus_frame_duration_ms=60,
+                )
+            )
+
+        error = next(item for item in websocket.sent_json if item["type"] == "error")
+        self.assertEqual(error["turn_id"], "bad-turn")
+        self.assertTrue(error["recoverable"])
+        done = [item for item in websocket.sent_json if item["type"] == "done"]
+        self.assertEqual(len(done), 1)
+        self.assertEqual(done[0]["turn_id"], "good-turn")
+        self.assertIsNone(websocket.close_code)
+
     def test_stream_opus_realtime_session_run_asr_sends_each_pcm_chunk_to_adapter(self) -> None:
         from src.api import realtime as realtime_api
         from src.providers.opus import encode_pcm_stream_to_framed_opus, opus_available

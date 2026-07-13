@@ -65,6 +65,10 @@ typedef struct {
     char session_id[DEMO_CLOUD_TASK_ID_MAX_LEN];
     char status[DEMO_CLOUD_STATUS_MAX_LEN];
     char audio_stream_url[DEMO_CLOUD_AUDIO_URL_MAX_LEN];
+    char turn_id[64];
+    char skill_name[32];
+    bool skill_active;
+    bool end_skill_state;
 } cloud_realtime_session_t;
 
 typedef struct {
@@ -124,6 +128,7 @@ typedef esp_err_t (*cloud_ota_artifact_chunk_callback_t)(const uint8_t *chunk,
                                                          void *user_ctx);
 
 typedef struct cloud_opus_uplink cloud_opus_uplink_t;
+typedef cloud_opus_uplink_t cloud_idiom_game_client_t;
 
 typedef struct {
     char error_code[DEMO_CLOUD_ERROR_CODE_MAX_LEN];
@@ -230,3 +235,15 @@ esp_err_t cloud_client_opus_uplink_finish(cloud_opus_uplink_t *uplink,
                                           cloud_realtime_session_t *session);
 
 void cloud_client_opus_uplink_abort(cloud_opus_uplink_t *uplink);
+
+esp_err_t cloud_client_idiom_game_connect(cloud_idiom_game_client_t **out_client,
+                                          cloud_opus_uplink_metrics_t *metrics);
+esp_err_t cloud_client_idiom_game_begin_turn(cloud_idiom_game_client_t *client,
+                                             const char *turn_id);
+esp_err_t cloud_client_idiom_game_send_pcm(cloud_idiom_game_client_t *client,
+                                           const uint8_t *pcm,
+                                           size_t pcm_bytes);
+esp_err_t cloud_client_idiom_game_finish_turn(cloud_idiom_game_client_t *client,
+                                              const char *turn_id,
+                                              cloud_realtime_session_t *session);
+void cloud_client_idiom_game_close(cloud_idiom_game_client_t *client);

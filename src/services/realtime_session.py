@@ -369,6 +369,13 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
         return
     if skill_result is not None:
         updated["trace"].update(skill_result.trace)
+        updated["trace"]["skill_route_complete"] = True
+        updated["trace"]["end_skill_state"] = bool(skill_result.end_skill_state)
+        updated["trace"]["skill_active"] = (
+            bool(skill_result.skill_active)
+            if skill_result.skill_active is not None
+            else not bool(skill_result.end_skill_state)
+        )
         updated["trace"]["skill_route_ms"] = 0
         updated["trace"]["retrieval_ms"] = updated["trace"]["skill_route_ms"]
         if stream_to_session_start_abs_ms is not None:
@@ -393,6 +400,18 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             return
 
         static_audio_paths = resolve_static_audio_plan(skill_result.audio_plan or []) if skill_result.audio_plan else None
+        if skill_result.skill_name == "idiom_game" and static_audio_paths is None:
+            static_audio_paths = resolve_static_audio_plan(["idiom_game/static_error"])
+            if static_audio_paths is None:
+                store.mark_failed(
+                    session_id,
+                    "idiom_static_error_missing",
+                    "Idiom static audio plan and static error are unavailable",
+                )
+                store.fail_audio(session_id, "idiom_static_error_missing")
+                return
+            updated["trace"]["static_audio_missing"] = True
+            updated["trace"]["static_audio_fallback"] = "idiom_game/static_error"
         if static_audio_paths is not None:
             updated["trace"]["static_audio_used"] = True
             updated["trace"]["static_audio_segment_count"] = len(static_audio_paths)
@@ -494,6 +513,8 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             _log_realtime_session_terminal(done_session)
         return
 
+    updated["trace"]["skill_route_complete"] = True
+    store.update_session(session_id, trace=updated["trace"])
     retrieval_started = time.perf_counter()
     try:
         references, top_score = retrieve_references(question_text, top_k=settings.top_k)

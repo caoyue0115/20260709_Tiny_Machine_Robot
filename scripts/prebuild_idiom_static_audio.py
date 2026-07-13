@@ -93,6 +93,14 @@ PHRASE_SEGMENTS: tuple[tuple[str, str], ...] = (
     ("idiom_game/robot_no_reply_user_win", "小机仔暂时接不上啦，这局你赢。"),
     ("idiom_game/not_found", "这个我还没在成语词库里找到。你可以换一个四字成语再接。"),
     ("idiom_game/exit", "这局先到这里，小机仔把小本本合上啦。"),
+    ("idiom_game/mode_easy", "已切换到简单模式，连续接对轮数已重新计算。"),
+    ("idiom_game/mode_normal", "已切换到普通模式，连续接对轮数已重新计算。"),
+    ("idiom_game/mode_hard", "已切换到困难模式，连续接对轮数已重新计算。"),
+    ("idiom_game/mode_full", "已切换到大师模式，连续接对轮数已重新计算。"),
+    ("idiom_game/challenge_win", "挑战成功，这局你赢。"),
+    ("idiom_game/continue_prompt", "我们继续成语接龙吧，请说一个能接上的四字成语。"),
+    ("idiom_game/retry", "我没听清，请再说一次。"),
+    ("idiom_game/static_error", "成语语音暂时不可用，请稍后再试。"),
 )
 
 

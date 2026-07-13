@@ -13,6 +13,7 @@ from src.voice_skills.idiom_game import (
     clean_idiom_text,
     load_default_idioms,
 )
+from src.voice_skills.idiom_audio import get_idiom_audio_catalog
 
 
 _START_IDIOM_GAME_PHRASES = ("开始成语接龙", "玩成语接龙", "来成语接龙", "成语接龙")
@@ -31,6 +32,18 @@ _EXIT_IDIOM_GAME_PHRASES = (
     "结束成语接龙",
     "退出接龙",
     "结束接龙",
+    "先这样",
+    "停止",
+    "结束吧",
+)
+_REPEAT_IDIOM_GAME_PHRASES = (
+    "没听清",
+    "没听到",
+    "再说一次",
+    "再说一遍",
+    "重复一下",
+    "重复一遍",
+    "刚才是什么",
 )
 
 
@@ -41,6 +54,7 @@ class SkillResult:
     answer_stream: Iterable[str] | None = None
     audio_plan: list[str] | None = None
     end_skill_state: bool = False
+    skill_active: bool | None = None
     trace: dict = field(default_factory=dict)
 
 
@@ -75,8 +89,10 @@ def _judge_unknown_idiom_with_llm(text: str, expected_py: str) -> IdiomJudgeDeci
         word=str(payload.get("normalized_idiom") or payload.get("word") or ""),
         first_py=str(payload.get("first_py") or ""),
         last_py=str(payload.get("last_py") or ""),
+        intent=str(payload.get("intent") or "unknown"),
         confidence=_payload_float(payload.get("confidence")),
         is_idiom=_payload_bool(payload.get("is_idiom")),
+        matches_expected_pinyin=_payload_bool(payload.get("matches_expected_pinyin")),
     )
 
 
@@ -116,21 +132,34 @@ class SkillRouter:
                     audio_plan=build_idiom_audio_plan(answer_text),
                     end_skill_state=True,
                 )
+            if self._matches_any(cleaned_text, _REPEAT_IDIOM_GAME_PHRASES):
+                answer_text = self._idiom_skill.repeat(device_id)
+                idiom_trace = self._idiom_trace(base_trace)
+                return self._text_result(
+                    "idiom_game",
+                    answer_text,
+                    idiom_trace,
+                    audio_plan=build_idiom_audio_plan(answer_text, idiom_trace),
+                )
             answer_text = self._idiom_skill.handle(device_id, raw_text)
+            idiom_trace = self._idiom_trace(base_trace)
+            end_skill_state = not self._idiom_skill.store.is_active(device_id)
             return self._text_result(
                 "idiom_game",
                 answer_text,
-                self._idiom_trace(base_trace),
-                audio_plan=build_idiom_audio_plan(answer_text),
+                idiom_trace,
+                audio_plan=build_idiom_audio_plan(answer_text, idiom_trace),
+                end_skill_state=end_skill_state,
             )
 
         if self._matches_any(cleaned_text, _START_IDIOM_GAME_PHRASES):
             answer_text = self._idiom_skill.start(device_id, raw_text)
+            idiom_trace = self._idiom_trace(base_trace)
             return self._text_result(
                 "idiom_game",
                 answer_text,
-                self._idiom_trace(base_trace),
-                audio_plan=build_idiom_audio_plan(answer_text),
+                idiom_trace,
+                audio_plan=build_idiom_audio_plan(answer_text, idiom_trace),
             )
 
         return None
@@ -148,11 +177,19 @@ class SkillRouter:
         audio_plan: list[str] | None = None,
         end_skill_state: bool = False,
     ) -> SkillResult:
+        catalog = get_idiom_audio_catalog() if skill_name == "idiom_game" else None
+        if catalog is not None and audio_plan:
+            resolved_plan = catalog.resolve_plan(audio_plan)
+            if resolved_plan != audio_plan:
+                trace = dict(trace)
+                trace["idiom_audio_plan_fallback"] = catalog.static_error_segment
+            audio_plan = resolved_plan
         return SkillResult(
             skill_name=skill_name,
             answer_text=answer_text,
             audio_plan=audio_plan,
             end_skill_state=end_skill_state,
+            skill_active=not end_skill_state,
             trace=self._trace(trace, skill_name),
         )
 
@@ -169,11 +206,13 @@ class SkillRouter:
 
 
 _default_router: SkillRouter | None = None
+_default_router_catalog: object | None = None
 
 
 def get_default_skill_router() -> SkillRouter:
-    global _default_router
-    if _default_router is None:
+    global _default_router, _default_router_catalog
+    catalog = get_idiom_audio_catalog()
+    if _default_router is None or catalog is not _default_router_catalog:
         _default_router = SkillRouter(
             idiom_skill=IdiomGameSkill(
                 load_default_idioms(),
@@ -184,9 +223,11 @@ def get_default_skill_router() -> SkillRouter:
                 judge_min_confidence=settings.idiom_game_llm_judge_min_confidence,
                 robot_difficulty=settings.idiom_game_robot_difficulty,
                 target_user_turns=settings.idiom_game_target_user_turns,
+                playable_words=catalog.playable_words if catalog is not None else None,
             ),
             enabled_skills=settings.enabled_skills,
         )
+        _default_router_catalog = catalog
     return _default_router
 
 

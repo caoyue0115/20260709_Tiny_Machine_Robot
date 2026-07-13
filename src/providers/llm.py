@@ -21,8 +21,9 @@ TINY_COFFEE_SYSTEM_PROMPT = (
     "不要编造品牌、价格、门店或活动信息，也不要编造库存或优惠信息。"
 )
 IDIOM_JUDGE_SYSTEM_PROMPT = (
-    "你是成语接龙裁判。"
-    "你的任务是从用户语音识别文本中找出用户真正想接的一个成语，忽略“我接”“答案是”等口语噪声。"
+    "你是成语接龙意图分类器和裁判。"
+    "先判断用户意图是idiom、exit、repeat、easy、hard、invalid或off_topic。"
+    "当意图是idiom时，从语音识别文本中找出用户真正想接的一个成语，忽略“我接”“答案是”等口语噪声，"
     "判断它是否是规范成语，并给出首字和末字的普通话拼音。"
     "拼音必须小写、无声调、只保留英文字母，例如 jing、guo。"
     "只返回JSON，不要解释。"
@@ -185,9 +186,12 @@ def judge_idiom_answer(raw_text: str, expected_py: str) -> dict | None:
                     f"当前需要接的首字拼音：{expected_py}\n"
                     f"用户ASR文本：{raw_text}\n"
                     "请返回如下JSON："
-                    '{"is_idiom": true, "normalized_idiom": "四字成语或空字符串", '
-                    '"first_py": "首字拼音或空", "last_py": "末字拼音或空", "confidence": 0.0}\n'
-                    "如果没有清晰成语，is_idiom=false。即使首字拼音不匹配，也返回实际first_py。"
+                    '{"intent": "idiom | exit | repeat | easy | hard | invalid | off_topic", '
+                    '"normalized_idiom": "四字成语或空字符串", "first_py": "首字拼音或空", '
+                    '"last_py": "末字拼音或空", "is_idiom": true, '
+                    '"matches_expected_pinyin": false, "confidence": 0.0}\n'
+                    "控制意图忽略成语和拼音字段。没有清晰成语时is_idiom=false。"
+                    "即使首字拼音不匹配，也返回实际first_py；matches_expected_pinyin仅用于诊断。"
                 ),
             },
         ],

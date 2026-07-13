@@ -30,8 +30,11 @@ static const local_command_entry_t s_command_entries[] = {
     {111, "jian dan yi dian", "简单模式", LOCAL_COMMAND_KIND_IDIOM_MODE},
     {120, "kun nan mo shi", "困难模式", LOCAL_COMMAND_KIND_IDIOM_MODE},
     {121, "nan yi dian", "困难模式", LOCAL_COMMAND_KIND_IDIOM_MODE},
-    {130, "tui chu you xi", "退出游戏", LOCAL_COMMAND_KIND_IDIOM_EXIT},
-    {131, "bu wan le", "退出游戏", LOCAL_COMMAND_KIND_IDIOM_EXIT},
+    {140, "wo mei ting qing", "我没听清", LOCAL_COMMAND_KIND_IDIOM_REPEAT},
+    {141, "wo mei ting dao", "我没听到", LOCAL_COMMAND_KIND_IDIOM_REPEAT},
+    {142, "zai shuo yi bian", "再说一遍", LOCAL_COMMAND_KIND_IDIOM_REPEAT},
+    {143, "chong fu yi bian", "重复一遍", LOCAL_COMMAND_KIND_IDIOM_REPEAT},
+    {144, "gang cai shi shen me", "刚才是什么", LOCAL_COMMAND_KIND_IDIOM_REPEAT},
 };
 
 typedef struct {
@@ -144,6 +147,10 @@ static esp_err_t local_command_detect_current_chunk(local_command_result_t *out_
     }
 
     esp_mn_state_t state = s_local.multinet->detect(s_local.model_data, s_local.chunk);
+    if (state == ESP_MN_STATE_TIMEOUT) {
+        out_result->timed_out = true;
+        return ESP_OK;
+    }
     if (state != ESP_MN_STATE_DETECTED) {
         return ESP_OK;
     }

@@ -134,9 +134,15 @@ class EspAssetTests(unittest.TestCase):
             "wan cheng yu jie long",
             "jian dan mo shi",
             "kun nan mo shi",
-            "tui chu you xi",
+            "wo mei ting qing",
+            "wo mei ting dao",
+            "zai shuo yi bian",
+            "chong fu yi bian",
+            "gang cai shi shen me",
         ):
             self.assertIn(snippet, local_source)
+        self.assertNotIn("tui chu you xi", local_source)
+        self.assertNotIn("bu wan le", local_source)
 
         self.assertIn("local_command_service_feed", local_header)
         self.assertIn("local_command_service_feed", main_source)

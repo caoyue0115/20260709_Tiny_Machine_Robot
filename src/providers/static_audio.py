@@ -14,6 +14,38 @@ class StaticAudioError(ValueError):
     pass
 
 
+def validate_static_audio_segment(segment_id: str, root: Path | None = None) -> Path:
+    base = (root or settings.static_audio_path).resolve()
+    path = _resolve_segment_path(str(segment_id or "").strip(), base)
+    if path is None:
+        raise StaticAudioError(f"static_audio_missing:{segment_id}")
+    try:
+        if path.suffix.lower() == ".pcm":
+            size = path.stat().st_size
+            if size <= 0 or size % 2 != 0:
+                raise StaticAudioError(f"static_audio_invalid_pcm16:{segment_id}")
+            with path.open("rb") as handle:
+                if len(handle.read(2)) != 2:
+                    raise StaticAudioError(f"static_audio_unreadable:{segment_id}")
+            return path
+        if path.suffix.lower() == ".wav":
+            with wave.open(str(path), "rb") as reader:
+                valid = (
+                    reader.getframerate() == 16000
+                    and reader.getnchannels() == 1
+                    and reader.getsampwidth() == 2
+                    and reader.getcomptype() == "NONE"
+                    and reader.getnframes() > 0
+                    and len(reader.readframes(1)) == 2
+                )
+            if not valid:
+                raise StaticAudioError(f"static_audio_invalid_format:{segment_id}")
+            return path
+    except (OSError, EOFError, wave.Error) as exc:
+        raise StaticAudioError(f"static_audio_unreadable:{segment_id}") from exc
+    raise StaticAudioError(f"static_audio_unsupported_format:{path.suffix.lower()}")
+
+
 def resolve_static_audio_plan(segment_ids: Iterable[str], root: Path | None = None) -> list[Path] | None:
     if not settings.static_audio_enabled:
         return None
