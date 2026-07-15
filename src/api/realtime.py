@@ -40,6 +40,7 @@ from src.services.realtime_session import (
 from src.settings import settings
 from src.storage.files import save_pcm_as_wav
 from src.storage.realtime_store import InMemoryRealtimeSessionStore
+from src.voice_skills.router import end_idiom_game
 
 logger = logging.getLogger(__name__)
 
@@ -1276,7 +1277,7 @@ class _IdiomTurnWebSocket:
 @router.websocket("/api/v5/realtime/idiom-game/opus-stream")
 async def stream_idiom_game_session(
     websocket: WebSocket,
-    x_device_id: str = Header(default="esp-idiom-game-001"),
+    x_device_id: str = Header(...),
     x_audio_packetization: str = Header(default="framed-v1"),
     x_audio_format: str = Header(default="opus"),
     x_opus_sample_rate: int = Header(default=settings.realtime_audio_opus_sample_rate),
@@ -1306,7 +1307,33 @@ async def stream_idiom_game_session(
         except json.JSONDecodeError:
             await _send_idiom_stream_error(websocket, "invalid_control_json")
             continue
-        if control.get("type") != "utterance_start":
+        control_type = str(control.get("type") or "")
+        if control_type == "idle_exit":
+            event_id = str(control.get("event_id") or "").strip()
+            if not event_id or len(event_id) > 128:
+                await _send_idiom_stream_error(websocket, "invalid_idle_exit_event_id")
+                continue
+            cleared = end_idiom_game(x_device_id)
+            await websocket.send_json(
+                {
+                    "type": "idle_exit_ack",
+                    "event_id": event_id,
+                    "device_id": x_device_id,
+                    "skill_name": "idiom_game",
+                    "skill_active": False,
+                    "end_skill_state": True,
+                    "cleared": cleared,
+                }
+            )
+            logger.info(
+                "idiom_game_idle_exit device_id=%s event_id=%s reason=%s cleared=%s",
+                x_device_id,
+                event_id,
+                str(control.get("reason") or "idle_timeout"),
+                cleared,
+            )
+            continue
+        if control_type != "utterance_start":
             await _send_idiom_stream_error(
                 websocket,
                 "idle_control_message",

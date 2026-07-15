@@ -123,6 +123,31 @@ def test_game_capture_uses_real_200ms_preroll_and_200ms_trailing_silence() -> No
     assert "calloc(1, AUDIO_IN_GAME_PREROLL_BYTES)" not in audio_source
 
 
+def test_game_vad_waits_for_mic_settle_and_requires_consecutive_speech() -> None:
+    audio_source = (ROOT / "esp_idf_demo" / "main" / "audio_in.c").read_text(
+        encoding="utf-8"
+    )
+    wait_body = audio_source.split(
+        "esp_err_t audio_in_wait_for_game_speech_start", 1
+    )[1].split("esp_err_t audio_in_record_after_speech_start", 1)[0]
+
+    assert "armed_at_us" in wait_body
+    assert "DEMO_WAITING_SPEECH_ARM_MS" in wait_body
+    assert wait_body.index("audio_in_game_preroll_ring_write") < wait_body.index(
+        "now_us < armed_at_us"
+    )
+    first_armed_branch = wait_body.split("if (!armed_logged)", 1)[1].split(
+        "if (chunk_level < DEMO_WAITING_SPEECH_START_THRESHOLD)", 1
+    )[0]
+    assert "continue" in first_armed_branch
+    assert "hold_bytes += DEMO_AUDIO_CHUNK_BYTES" in wait_body
+    assert "hold_bytes = 0" in wait_body
+    assert "hold_bytes < DEMO_SPEECH_START_HOLD_BYTES" in wait_body
+    assert '"stage=idiom_game_waiting_speech event=armed' in wait_body
+    assert '"stage=idiom_game_waiting_speech event=speech_detected' in wait_body
+    assert '"stage=idiom_game_waiting_speech event=timeout' in wait_body
+
+
 def test_game_cloud_client_keeps_socket_across_turns_and_matches_turn_id() -> None:
     cloud_header = (ROOT / "esp_idf_demo" / "main" / "cloud_client.h").read_text(encoding="utf-8")
     cloud_source = (ROOT / "esp_idf_demo" / "main" / "cloud_client.c").read_text(encoding="utf-8")
@@ -151,6 +176,45 @@ def test_game_cloud_client_keeps_socket_across_turns_and_matches_turn_id() -> No
     assert "cloud_client_opus_uplink_abort" not in finish_body
 
 
+def test_recoverable_game_turn_error_silently_rearms_without_reconnecting() -> None:
+    cloud_header = (ROOT / "esp_idf_demo" / "main" / "cloud_client.h").read_text(
+        encoding="utf-8"
+    )
+    cloud_source = (ROOT / "esp_idf_demo" / "main" / "cloud_client.c").read_text(
+        encoding="utf-8"
+    )
+    main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
+
+    assert "DEMO_CLOUD_ERR_RECOVERABLE_TURN" in cloud_header
+    assert "recoverable_error_received" in cloud_source
+    error_handler = cloud_source.split('strcmp(type, "error") == 0', 1)[1].split(
+        "cJSON_Delete(root)", 1
+    )[0]
+    assert 'cloud_json_get_bool_default(root, "recoverable", false)' in error_handler
+    assert error_handler.index("recoverable_error_received") < error_handler.index(
+        "error_received = true"
+    )
+    assert error_handler.index('"error_code"') < error_handler.index("error_received = true")
+    finish_body = cloud_source.split("esp_err_t cloud_client_idiom_game_finish_turn", 1)[1].split(
+        "void cloud_client_idiom_game_close", 1
+    )[0]
+    assert "DEMO_CLOUD_ERR_RECOVERABLE_TURN" in finish_body
+
+    game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
+        "static esp_err_t run_trigger_pipeline", 1
+    )[0]
+    recoverable_branch = game_loop.split(
+        "if (ret == DEMO_CLOUD_ERR_RECOVERABLE_TURN)", 1
+    )[1].split("if (ret != ESP_OK)", 1)[0]
+    assert "cloud_client_idiom_game_close" not in recoverable_branch
+    assert "app_idiom_game_should_prompt_presence(metrics.error_code)" in recoverable_branch
+    assert "if (should_prompt && !presence_prompted)" in recoverable_branch
+    assert 'app_play_retry_prompt("idiom_game_presence"' in recoverable_branch
+    assert "action=silent_rearm" in recoverable_branch
+    assert "ret = ESP_OK" in recoverable_branch
+    assert "continue" in recoverable_branch
+
+
 def test_main_has_wake_free_idiom_game_state_machine_and_echo_guard() -> None:
     main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
 
@@ -176,6 +240,57 @@ def test_main_has_wake_free_idiom_game_state_machine_and_echo_guard() -> None:
         "if (ret != ESP_OK)", 1
     )[0]
     assert "ret = ESP_OK" in timeout_branch
+
+
+def test_empty_game_turn_prompts_presence_once_then_rearms_vad() -> None:
+    main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
+
+    assert "#define APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS 1500" in main
+    assert "#define APP_IDIOM_GAME_PRESENCE_PROMPT_PATH" in main
+    assert '"/spiffs/idiom_game_presence_1.pcm"' in main
+    assert "app_idiom_game_should_prompt_presence" in main
+    for error_code in ("empty_decoded_audio", "asr_empty_text", "asr_no_final_text"):
+        assert f'"{error_code}"' in main
+
+    game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
+        "static esp_err_t run_trigger_pipeline", 1
+    )[0]
+    assert "presence_prompted" in game_loop
+    assert 'app_play_retry_prompt("idiom_game_presence"' in game_loop
+    assert "APP_IDIOM_GAME_POST_PROMPT_IDLE_MS" in game_loop
+    assert "action=presence_prompt_then_vad_rearm" in game_loop
+
+
+def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() -> None:
+    main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
+    cloud_header = (ROOT / "esp_idf_demo" / "main" / "cloud_client.h").read_text(
+        encoding="utf-8"
+    )
+    cloud_source = (ROOT / "esp_idf_demo" / "main" / "cloud_client.c").read_text(
+        encoding="utf-8"
+    )
+
+    assert "#define APP_IDIOM_GAME_POST_PROMPT_IDLE_MS 30000" in main
+    assert "#define APP_IDIOM_GAME_NORMAL_IDLE_MS 60000" in main
+    assert "#define APP_IDIOM_GAME_HARD_IDLE_MS 180000" in main
+    assert "#define APP_IDIOM_GAME_IDLE_EXIT_ACK_TIMEOUT_MS 2000" in main
+    assert "#define APP_IDIOM_GAME_IDLE_EXIT_PROMPT_PATH" in main
+    assert '"/spiffs/idiom_game_idle_exit_1.pcm"' in main
+    assert "cloud_client_idiom_game_idle_exit" in cloud_header
+    assert "cloud_client_idiom_game_idle_exit" in cloud_source
+    assert 'cJSON_AddStringToObject(root, "type", "idle_exit")' in cloud_source
+    assert 'cJSON_AddStringToObject(root, "event_id", event_id)' in cloud_source
+    assert 'cJSON_AddStringToObject(root, "reason", reason)' in cloud_source
+    assert "idle_exit_ack_received" in cloud_source
+    assert 'strcmp(type, "idle_exit_ack") == 0' in cloud_source
+
+    game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
+        "static esp_err_t run_trigger_pipeline", 1
+    )[0]
+    assert 'app_play_retry_prompt("idiom_game_idle_exit"' in game_loop
+    assert "cloud_client_idiom_game_idle_exit" in game_loop
+    assert "s_local_idiom_context_until_us = 0" in game_loop
+    assert "action=restore_wakenet" in game_loop
 
 
 def test_game_multinet_hit_uses_text_session_before_cloud_asr_start() -> None:

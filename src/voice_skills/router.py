@@ -164,6 +164,12 @@ class SkillRouter:
 
         return None
 
+    def end_idiom_game(self, device_id: str) -> bool:
+        if not self._idiom_skill.store.is_active(device_id):
+            return False
+        self._idiom_skill.exit(device_id)
+        return True
+
     @staticmethod
     def _matches_any(cleaned_text: str, phrases: tuple[str, ...]) -> bool:
         return any(phrase in cleaned_text for phrase in phrases)
@@ -244,3 +250,7 @@ def route_voice_skill(
         answer_mode=answer_mode,
         trace=trace,
     )
+
+
+def end_idiom_game(device_id: str) -> bool:
+    return get_default_skill_router().end_idiom_game(device_id)

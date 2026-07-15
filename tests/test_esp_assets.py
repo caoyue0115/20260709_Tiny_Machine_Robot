@@ -151,6 +151,23 @@ class EspAssetTests(unittest.TestCase):
         self.assertIn("cloud_client_submit_text_session", cloud_source)
         self.assertIn("api/v5/realtime/text-sessions", cloud_source)
 
+    def test_multinet_uplink_reserves_pipeline_stack_headroom(self) -> None:
+        cmake = (ESP_DIR / "main" / "CMakeLists.txt").read_text(encoding="utf-8")
+
+        default_match = re.search(
+            r"set\(DEMO_PIPELINE_TASK_STACK_SIZE\s+(\d+)\)",
+            cmake,
+        )
+        self.assertIsNotNone(
+            default_match,
+            "the MultiNet + Opus pipeline needs an explicit non-secret CMake stack default",
+        )
+        self.assertGreaterEqual(int(default_match.group(1)), 40 * 1024)
+        self.assertIn(
+            "DEMO_PIPELINE_TASK_STACK_SIZE=${DEMO_PIPELINE_TASK_STACK_SIZE}",
+            cmake,
+        )
+
     def test_vocat_lowcost_16m8m_defaults_to_v1_0_audio_binding(self) -> None:
         profile = (ESP_DIR / "sdkconfig.defaults.vocat_lowcost_16m8m").read_text(encoding="utf-8")
         config = (ESP_DIR / "main" / "config.h").read_text(encoding="utf-8")
@@ -281,6 +298,16 @@ class EspAssetTests(unittest.TestCase):
             self.assertGreater(prompt.stat().st_size, 0)
             self.assertLessEqual(prompt.stat().st_size, 64 * 1024)
 
+    def test_idiom_game_prompt_audio_assets_are_pcm16_resources(self) -> None:
+        presence_prompt = ESP_DIR / "spiffs" / "idiom_game_presence_1.pcm"
+        idle_exit_prompt = ESP_DIR / "spiffs" / "idiom_game_idle_exit_1.pcm"
+
+        for prompt in (presence_prompt, idle_exit_prompt):
+            self.assertTrue(prompt.exists())
+            self.assertGreater(prompt.stat().st_size, 0)
+            self.assertEqual(prompt.stat().st_size % 2, 0)
+            self.assertLessEqual(prompt.stat().st_size, 64 * 1024)
+
     def test_local_prompt_manifest_preserves_original_prompt_text(self) -> None:
         manifest = json.loads((ESP_DIR / "spiffs_prompt_manifest.json").read_text(encoding="utf-8"))
 
@@ -289,6 +316,8 @@ class EspAssetTests(unittest.TestCase):
             manifest["prompts"],
             {
                 "record_prompt_1.pcm": "请讲。",
+                "idiom_game_idle_exit_1.pcm": "那我们下次再玩吧。",
+                "idiom_game_presence_1.pcm": "你还在吗？",
                 "record_retry_error_1.pcm": "请重试。",
                 "record_retry_rearm_1.pcm": "请重讲。",
                 "record_retry_timeout_1.pcm": "请重新按。",

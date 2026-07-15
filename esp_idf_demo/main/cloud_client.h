@@ -54,6 +54,10 @@
 #define DEMO_CLOUD_ERR_AUDIO_STREAM_EARLY_EOF (DEMO_CLOUD_ERR_BASE + 4)
 #endif
 
+#ifndef DEMO_CLOUD_ERR_RECOVERABLE_TURN
+#define DEMO_CLOUD_ERR_RECOVERABLE_TURN (DEMO_CLOUD_ERR_BASE + 5)
+#endif
+
 typedef struct {
     char status[DEMO_CLOUD_STATUS_MAX_LEN];
     char audio_url[DEMO_CLOUD_AUDIO_URL_MAX_LEN];
@@ -246,4 +250,8 @@ esp_err_t cloud_client_idiom_game_send_pcm(cloud_idiom_game_client_t *client,
 esp_err_t cloud_client_idiom_game_finish_turn(cloud_idiom_game_client_t *client,
                                               const char *turn_id,
                                               cloud_realtime_session_t *session);
+esp_err_t cloud_client_idiom_game_idle_exit(cloud_idiom_game_client_t *client,
+                                            const char *event_id,
+                                            const char *reason,
+                                            int ack_timeout_ms);
 void cloud_client_idiom_game_close(cloud_idiom_game_client_t *client);

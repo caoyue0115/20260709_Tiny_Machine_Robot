@@ -405,6 +405,18 @@ class VoiceSkillRouterTests(unittest.TestCase):
                 self.assertIn("这局先到这里", result.answer_text or "")
                 self.assertFalse(store.is_active("esp-1"))
 
+    def test_idle_exit_clears_only_current_device_and_is_idempotent(self) -> None:
+        router, store = self._build_small_router()
+        router.route(device_id="esp-a", text="开始成语接龙", answer_mode="short", trace={})
+        router.route(device_id="esp-b", text="开始成语接龙", answer_mode="short", trace={})
+
+        self.assertTrue(router.end_idiom_game("esp-a"))
+        self.assertFalse(store.is_active("esp-a"))
+        self.assertTrue(store.is_active("esp-b"))
+
+        self.assertFalse(router.end_idiom_game("esp-a"))
+        self.assertTrue(store.is_active("esp-b"))
+
 
 class RealtimeSkillIntegrationTests(unittest.TestCase):
     def test_realtime_session_keeps_coffee_rag_when_no_skill_matches(self) -> None:

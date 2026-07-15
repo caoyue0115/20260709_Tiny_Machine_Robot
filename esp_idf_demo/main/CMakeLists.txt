@@ -17,5 +17,16 @@ foreach(name IN LISTS DEMO_LOCAL_STRING_DEFINITIONS)
     endif()
 endforeach()
 
+# Active MultiNet inference and Opus/WebSocket upload share the audio pipeline
+# task. Keep the stack default outside config.h so local credentials and device
+# settings remain untracked, while still allowing an idf.py -D override.
+if(NOT DEFINED DEMO_PIPELINE_TASK_STACK_SIZE)
+    set(DEMO_PIPELINE_TASK_STACK_SIZE 40960)
+endif()
+target_compile_definitions(
+    ${COMPONENT_LIB}
+    PRIVATE DEMO_PIPELINE_TASK_STACK_SIZE=${DEMO_PIPELINE_TASK_STACK_SIZE}
+)
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../spiffs")
 spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)

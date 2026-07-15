@@ -450,11 +450,15 @@ esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
     }
 
     const int64_t wait_start_us = esp_timer_get_time();
+    const int64_t armed_at_us =
+        wait_start_us + (int64_t)DEMO_WAITING_SPEECH_ARM_MS * 1000;
     const int64_t timeout_at_us =
         wait_start_us + (int64_t)DEMO_WAIT_FOR_SPEECH_TIMEOUT_MS * 1000;
     size_t ring_write_offset = 0;
     size_t ring_valid_bytes = 0;
+    size_t hold_bytes = 0;
     uint32_t max_level = 0;
+    bool armed_logged = false;
 
     while (esp_timer_get_time() < timeout_at_us) {
         ret = audio_in_read_chunk(chunk, DEMO_AUDIO_CHUNK_BYTES);
@@ -470,11 +474,28 @@ esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
                                          &ring_valid_bytes,
                                          chunk,
                                          DEMO_AUDIO_CHUNK_BYTES);
+        const int64_t now_us = esp_timer_get_time();
         const uint32_t chunk_level = audio_in_avg_abs_pcm16_le(chunk, DEMO_AUDIO_CHUNK_BYTES);
         if (chunk_level > max_level) {
             max_level = chunk_level;
         }
+        if (now_us < armed_at_us) {
+            continue;
+        }
+        if (!armed_logged) {
+            ESP_LOGI(TAG,
+                     "stage=idiom_game_waiting_speech event=armed elapsed_ms=%u",
+                     (unsigned)((now_us - wait_start_us) / 1000));
+            armed_logged = true;
+            hold_bytes = 0;
+            continue;
+        }
         if (chunk_level < DEMO_WAITING_SPEECH_START_THRESHOLD) {
+            hold_bytes = 0;
+            continue;
+        }
+        hold_bytes += DEMO_AUDIO_CHUNK_BYTES;
+        if (hold_bytes < DEMO_SPEECH_START_HOLD_BYTES) {
             continue;
         }
 
@@ -490,10 +511,17 @@ esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
         }
         if (out_metrics != NULL) {
             out_metrics->elapsed_ms =
-                (uint32_t)((esp_timer_get_time() - wait_start_us) / 1000);
+                (uint32_t)((now_us - wait_start_us) / 1000);
             out_metrics->max_level = max_level;
             out_metrics->speech_prefix_bytes = ring_valid_bytes;
         }
+        ESP_LOGI(TAG,
+                 "stage=idiom_game_waiting_speech event=speech_detected elapsed_ms=%u "
+                 "max_level=%u hold_ms=%u speech_prefix_bytes=%u",
+                 (unsigned)((now_us - wait_start_us) / 1000),
+                 (unsigned)max_level,
+                 (unsigned)DEMO_SPEECH_START_HOLD_MS,
+                 (unsigned)ring_valid_bytes);
         *out_speech_prefix = snapshot;
         *out_speech_prefix_bytes = ring_valid_bytes;
         free(chunk);
@@ -506,6 +534,11 @@ esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
             (uint32_t)((esp_timer_get_time() - wait_start_us) / 1000);
         out_metrics->max_level = max_level;
     }
+    ESP_LOGI(TAG,
+             "stage=idiom_game_waiting_speech event=timeout elapsed_ms=%u max_level=%u "
+             "action=silent_rearm",
+             (unsigned)((esp_timer_get_time() - wait_start_us) / 1000),
+             (unsigned)max_level);
     free(chunk);
     free(game_preroll_ring);
     audio_in_close_locked();

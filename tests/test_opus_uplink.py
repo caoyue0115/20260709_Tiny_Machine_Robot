@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -805,6 +806,66 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         self.assertEqual(len(errors), 2)
         self.assertTrue(all(item["recoverable"] for item in errors))
         self.assertIsNone(websocket.close_code)
+
+    def test_persistent_idiom_websocket_idle_exit_clears_connection_device_and_acks(self) -> None:
+        from src.api import realtime as realtime_api
+
+        websocket = _FakeWebSocket(
+            [
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps(
+                        {
+                            "type": "idle_exit",
+                            "event_id": "idle-event-1",
+                            "reason": "no_vad_after_presence_prompt",
+                            "device_id": "esp-other",
+                        }
+                    ),
+                },
+                {"type": "websocket.disconnect"},
+            ]
+        )
+
+        with mock.patch.object(realtime_api, "create_realtime_asr_session") as create_asr, mock.patch.object(
+            realtime_api, "end_idiom_game", return_value=True, create=True
+        ) as end_game:
+            asyncio.run(
+                realtime_api.stream_idiom_game_session(
+                    websocket,
+                    x_device_id="esp-current",
+                    x_audio_packetization="framed-v1",
+                    x_audio_format="opus",
+                    x_opus_sample_rate=16000,
+                    x_opus_channels=1,
+                    x_opus_frame_duration_ms=60,
+                )
+            )
+
+        create_asr.assert_not_called()
+        end_game.assert_called_once_with("esp-current")
+        self.assertIn(
+            {
+                "type": "idle_exit_ack",
+                "event_id": "idle-event-1",
+                "device_id": "esp-current",
+                "skill_name": "idiom_game",
+                "skill_active": False,
+                "end_skill_state": True,
+                "cleared": True,
+            },
+            websocket.sent_json,
+        )
+        self.assertIsNone(websocket.close_code)
+
+    def test_persistent_idiom_websocket_requires_device_id_header(self) -> None:
+        from src.api import realtime as realtime_api
+
+        parameter = inspect.signature(realtime_api.stream_idiom_game_session).parameters[
+            "x_device_id"
+        ]
+
+        self.assertIsNone(parameter.default)
 
     def test_persistent_idiom_websocket_recovers_after_turn_decode_error(self) -> None:
         from src.api import realtime as realtime_api

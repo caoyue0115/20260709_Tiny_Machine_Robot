@@ -129,10 +129,13 @@ struct cloud_opus_uplink {
     volatile bool connected;
     volatile bool disconnected;
     volatile bool error_received;
+    volatile bool recoverable_error_received;
     volatile bool done_received;
+    volatile bool idle_exit_ack_received;
     bool persistent_game;
     bool turn_active;
     char turn_id[64];
+    char idle_exit_event_id[64];
     cloud_realtime_session_t session;
     char ws_url[320];
     char ws_headers[640];
@@ -1583,8 +1586,16 @@ static void cloud_opus_uplink_handle_json(cloud_opus_uplink_t *uplink, const cha
         uplink->session.end_skill_state =
             cloud_json_get_bool_default(root, "end_skill_state", false);
         snprintf(uplink->session.status, sizeof(uplink->session.status), "%s", "done");
+    } else if (strcmp(type, "idle_exit_ack") == 0) {
+        char event_id[sizeof(uplink->idle_exit_event_id)] = {0};
+        cloud_opus_uplink_copy_optional_string(root, "event_id", event_id, sizeof(event_id));
+        if (uplink->idle_exit_event_id[0] != '\0' &&
+            strcmp(event_id, uplink->idle_exit_event_id) == 0) {
+            uplink->idle_exit_ack_received = true;
+        }
     } else if (strcmp(type, "error") == 0) {
-        uplink->error_received = true;
+        uplink->recoverable_error_received =
+            cloud_json_get_bool_default(root, "recoverable", false);
         if (uplink->metrics != NULL) {
             cloud_opus_uplink_copy_optional_string(root, "error_code",
                                                    uplink->metrics->error_code,
@@ -1593,6 +1604,7 @@ static void cloud_opus_uplink_handle_json(cloud_opus_uplink_t *uplink, const cha
                                                    uplink->metrics->error_message,
                                                    sizeof(uplink->metrics->error_message));
         }
+        uplink->error_received = true;
     }
 
     cJSON_Delete(root);
@@ -2091,6 +2103,7 @@ esp_err_t cloud_client_idiom_game_begin_turn(cloud_idiom_game_client_t *client,
     memset(&client->session, 0, sizeof(client->session));
     client->done_received = false;
     client->error_received = false;
+    client->recoverable_error_received = false;
     client->disconnected = false;
     client->sequence = 0;
     client->pcm_frame_len = 0;
@@ -2195,6 +2208,16 @@ esp_err_t cloud_client_idiom_game_finish_turn(cloud_idiom_game_client_t *client,
                      "%s",
                      client->error_received ? "websocket_server_error" : "websocket_done_timeout");
         }
+        if (client->error_received && client->recoverable_error_received) {
+            ESP_LOGW(TAG,
+                     "idiom_game_ws turn_error turn_id=%s error_code=%s "
+                     "recoverable=1 action=keep_socket",
+                     client->turn_id,
+                     client->metrics != NULL && client->metrics->error_code[0] != '\0'
+                         ? client->metrics->error_code
+                         : "unknown");
+            return DEMO_CLOUD_ERR_RECOVERABLE_TURN;
+        }
         return client->error_received ? ESP_FAIL : ESP_ERR_TIMEOUT;
     }
     if (client->session.audio_stream_url[0] == '\0') {
@@ -2202,6 +2225,67 @@ esp_err_t cloud_client_idiom_game_finish_turn(cloud_idiom_game_client_t *client,
     }
     *session = client->session;
     return ESP_OK;
+}
+
+esp_err_t cloud_client_idiom_game_idle_exit(cloud_idiom_game_client_t *client,
+                                            const char *event_id,
+                                            const char *reason,
+                                            int ack_timeout_ms)
+{
+    if (client == NULL || event_id == NULL || event_id[0] == '\0' ||
+        reason == NULL || reason[0] == '\0' || ack_timeout_ms <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!client->persistent_game || client->turn_active ||
+        !esp_websocket_client_is_connected(client->client)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (strlen(event_id) >= sizeof(client->idle_exit_event_id)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(root, "type", "idle_exit");
+    cJSON_AddStringToObject(root, "event_id", event_id);
+    cJSON_AddStringToObject(root, "reason", reason);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    client->idle_exit_ack_received = false;
+    snprintf(client->idle_exit_event_id,
+             sizeof(client->idle_exit_event_id),
+             "%s",
+             event_id);
+    const size_t json_len = strlen(json);
+    const int sent = esp_websocket_client_send_text(
+        client->client,
+        json,
+        json_len,
+        pdMS_TO_TICKS(V5_OPUS_UPLINK_WS_SEND_TIMEOUT_MS));
+    cJSON_free(json);
+    if (sent != (int)json_len) {
+        client->idle_exit_event_id[0] = '\0';
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG,
+             "idiom_game_ws idle_exit event_id=%s reason=%s",
+             event_id,
+             reason);
+    const int64_t wait_start_us = esp_timer_get_time();
+    while (!client->idle_exit_ack_received && !client->disconnected &&
+           (esp_timer_get_time() - wait_start_us) < ((int64_t)ack_timeout_ms * 1000)) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    const bool acknowledged = client->idle_exit_ack_received;
+    client->idle_exit_event_id[0] = '\0';
+    return acknowledged ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 void cloud_client_idiom_game_close(cloud_idiom_game_client_t *client)
