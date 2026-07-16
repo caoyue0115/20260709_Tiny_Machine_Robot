@@ -653,11 +653,16 @@ class OpusUplinkEndpointTests(unittest.TestCase):
             _FakeStreamingAsrAdapter(text="精卫填海", request_id="asr-1"),
             _FakeStreamingAsrAdapter(text="退出游戏", request_id="asr-2"),
         ]
-        skill_states = iter([(True, False), (False, True)])
+        skill_states = iter(
+            [
+                (True, False, "meaningful"),
+                (False, True, "exit"),
+            ]
+        )
 
         def finish_skill_session(store, session_id, _question_text, *, answer_mode=None):
             del answer_mode
-            skill_active, end_skill_state = next(skill_states)
+            skill_active, end_skill_state, turn_outcome = next(skill_states)
             session = store.get_session(session_id)
             assert session is not None
             trace = dict(session["trace"])
@@ -666,6 +671,7 @@ class OpusUplinkEndpointTests(unittest.TestCase):
                     "skill_name": "idiom_game",
                     "skill_active": skill_active,
                     "end_skill_state": end_skill_state,
+                    "turn_outcome": turn_outcome,
                 }
             )
             store.update_session(session_id, trace=trace)
@@ -706,6 +712,7 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         self.assertFalse(done[0]["end_skill_state"])
         self.assertFalse(done[1]["skill_active"])
         self.assertTrue(done[1]["end_skill_state"])
+        self.assertEqual([item["turn_outcome"] for item in done], ["meaningful", "exit"])
         self.assertTrue(all("audio_stream_url" in item for item in done))
         self.assertIsNone(websocket.close_code)
 
@@ -739,6 +746,7 @@ class OpusUplinkEndpointTests(unittest.TestCase):
                     "skill_name": "idiom_game",
                     "skill_active": True,
                     "end_skill_state": False,
+                    "turn_outcome": "meaningful",
                 }
             )
             store.update_session(session_id, trace=trace)
@@ -772,6 +780,7 @@ class OpusUplinkEndpointTests(unittest.TestCase):
         self.assertEqual(done["skill_name"], "idiom_game")
         self.assertTrue(done["skill_active"])
         self.assertFalse(done["end_skill_state"])
+        self.assertEqual(done["turn_outcome"], "meaningful")
         self.assertEqual(websocket.close_code, 1000)
 
     def test_persistent_idiom_websocket_idle_messages_do_not_create_asr_or_close(self) -> None:

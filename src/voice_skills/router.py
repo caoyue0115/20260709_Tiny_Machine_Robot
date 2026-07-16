@@ -55,7 +55,19 @@ class SkillResult:
     audio_plan: list[str] | None = None
     end_skill_state: bool = False
     skill_active: bool | None = None
+    turn_outcome: str | None = None
     trace: dict = field(default_factory=dict)
+
+
+def _idiom_turn_outcome(trace: dict, *, end_skill_state: bool) -> str:
+    if end_skill_state:
+        return "exit"
+    event = str(trace.get("idiom_event") or "")
+    if event in {"start", "robot_reply", "repeat", "difficulty_switch"}:
+        return "meaningful"
+    if event == "off_topic":
+        return "off_topic"
+    return "invalid"
 
 
 def _parse_enabled_skills(raw: str | Iterable[str] | None) -> set[str]:
@@ -196,6 +208,11 @@ class SkillRouter:
             audio_plan=audio_plan,
             end_skill_state=end_skill_state,
             skill_active=not end_skill_state,
+            turn_outcome=(
+                _idiom_turn_outcome(trace, end_skill_state=end_skill_state)
+                if skill_name == "idiom_game"
+                else None
+            ),
             trace=self._trace(trace, skill_name),
         )
 

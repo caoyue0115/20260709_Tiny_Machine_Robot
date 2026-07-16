@@ -48,6 +48,26 @@ def _parse_framed_packets(payload: bytes) -> list[tuple[int, bytes]]:
 
 
 class RealtimeSchemaTests(unittest.TestCase):
+    def test_board_done_payload_exposes_idiom_outcome_only_when_present(self) -> None:
+        from src.api.realtime import _make_board_done_payload
+
+        idiom_done = _make_board_done_payload(
+            {
+                "type": "done",
+                "skill_name": "idiom_game",
+                "turn_outcome": "meaningful",
+            }
+        )
+        ordinary_done = _make_board_done_payload(
+            {
+                "type": "done",
+                "question_text": "拿铁和卡布奇诺有什么区别",
+            }
+        )
+
+        self.assertEqual(idiom_done["turn_outcome"], "meaningful")
+        self.assertNotIn("turn_outcome", ordinary_done)
+
     def test_realtime_status_response_exposes_required_fields(self) -> None:
         from src.models.realtime import RealtimeSessionStatusResponse
 

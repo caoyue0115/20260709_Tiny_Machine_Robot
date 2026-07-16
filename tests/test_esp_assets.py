@@ -301,8 +301,9 @@ class EspAssetTests(unittest.TestCase):
     def test_idiom_game_prompt_audio_assets_are_pcm16_resources(self) -> None:
         presence_prompt = ESP_DIR / "spiffs" / "idiom_game_presence_1.pcm"
         idle_exit_prompt = ESP_DIR / "spiffs" / "idiom_game_idle_exit_1.pcm"
+        misheard_prompt = ESP_DIR / "spiffs" / "idiom_game_misheard_1.pcm"
 
-        for prompt in (presence_prompt, idle_exit_prompt):
+        for prompt in (presence_prompt, idle_exit_prompt, misheard_prompt):
             self.assertTrue(prompt.exists())
             self.assertGreater(prompt.stat().st_size, 0)
             self.assertEqual(prompt.stat().st_size % 2, 0)
@@ -317,6 +318,7 @@ class EspAssetTests(unittest.TestCase):
             {
                 "record_prompt_1.pcm": "请讲。",
                 "idiom_game_idle_exit_1.pcm": "那我们下次再玩吧。",
+                "idiom_game_misheard_1.pcm": "我没听清，你再说一次。",
                 "idiom_game_presence_1.pcm": "你还在吗？",
                 "record_retry_error_1.pcm": "请重试。",
                 "record_retry_rearm_1.pcm": "请重讲。",

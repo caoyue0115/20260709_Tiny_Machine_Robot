@@ -69,6 +69,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
         self.assertEqual(result.skill_name, "idiom_game")
         self.assertIn("小机仔先来", result.answer_text or "")
         self.assertEqual(len(result.audio_plan or []), 3)
+        self.assertEqual(result.turn_outcome, "meaningful")
 
     def test_start_reply_and_audio_plan_stop_after_opening_idiom(self) -> None:
         router, store = self._build_small_router()
@@ -131,6 +132,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
 
                 assert result is not None
                 self.assertEqual(result.audio_plan, [segment])
+                self.assertEqual(result.turn_outcome, "meaningful")
 
     def test_target_turn_win_uses_its_own_static_audio(self) -> None:
         from src.voice_skills.idiom_game import IdiomEntry, IdiomGameSkill, InMemoryIdiomGameStore
@@ -166,6 +168,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.answer_text, "海阔天空")
         self.assertEqual(result.audio_plan, ["idioms/海阔天空"])
+        self.assertEqual(result.turn_outcome, "meaningful")
         state = store.get("esp-1")
         self.assertIsNotNone(state)
         assert state is not None
@@ -202,6 +205,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
 
         assert result is not None
         self.assertIn("刚刚用过啦", result.answer_text or "")
+        self.assertEqual(result.turn_outcome, "invalid")
         self.assertEqual(
             result.audio_plan,
             ["idiom_game/repeated_prefix", "idiom_game/repeated_suffix"],
@@ -227,6 +231,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
                 assert result is not None
                 self.assertEqual(result.answer_text, "画龙点睛")
                 self.assertEqual(result.audio_plan, ["idioms/画龙点睛"])
+                self.assertEqual(result.turn_outcome, "meaningful")
                 after = store.get("esp-1")
                 assert after is not None
                 self.assertEqual(
@@ -245,6 +250,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
                 self.assertIsNotNone(result)
                 assert result is not None
                 self.assertTrue(result.end_skill_state)
+                self.assertEqual(result.turn_outcome, "exit")
                 self.assertEqual(result.audio_plan, ["idiom_game/exit"])
                 self.assertNotIn("成语词库", result.answer_text or "")
                 self.assertFalse(store.is_active("esp-1"))
@@ -270,6 +276,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertTrue(result.end_skill_state)
+        self.assertEqual(result.turn_outcome, "exit")
         self.assertEqual(result.audio_plan, ["idiom_game/exit"])
         self.assertNotIn("成语词库", result.answer_text or "")
         self.assertFalse(store.is_active("esp-1"))
@@ -299,6 +306,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.answer_text, "画龙点睛")
         self.assertEqual(result.audio_plan, ["idioms/画龙点睛"])
+        self.assertEqual(result.turn_outcome, "meaningful")
         self.assertEqual(result.trace["idiom_llm_intent"], "repeat")
         self.assertEqual(result.trace["idiom_llm_judge_confidence"], 0.95)
         self.assertFalse(result.trace["idiom_llm_matches_expected_pinyin"])
@@ -363,7 +371,29 @@ class VoiceSkillRouterTests(unittest.TestCase):
 
                 assert result is not None
                 self.assertEqual(result.audio_plan, ["idiom_game/not_found"])
+                self.assertEqual(result.turn_outcome, "invalid")
         self.assertEqual(calls, [])
+
+    def test_llm_off_topic_exports_off_topic_turn_outcome(self) -> None:
+        from src.voice_skills.idiom_game import IdiomJudgeDecision
+
+        router, _store = self._build_small_router(
+            judge_unknown_idiom=lambda _text, _expected: IdiomJudgeDecision(
+                intent="off_topic",
+                word="",
+                first_py="",
+                last_py="",
+                confidence=0.95,
+                is_idiom=False,
+                matches_expected_pinyin=False,
+            )
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="今天天气怎么样", answer_mode="short", trace={})
+
+        assert result is not None
+        self.assertEqual(result.turn_outcome, "off_topic")
 
     def test_llm_failure_uses_static_retry_without_advancing_state(self) -> None:
         router, store = self._build_small_router(
@@ -490,6 +520,7 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
                         skill_name="idiom_game",
                         answer_text="国泰民安",
                         audio_plan=audio_plan,
+                        turn_outcome="meaningful",
                         trace={"skill_name": "idiom_game"},
                     ),
                 ), mock.patch.object(
@@ -508,6 +539,7 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
         updated = store.get_session(session["session_id"])
         self.assertEqual(updated["status"], "done")
         self.assertEqual(updated["trace"]["skill_name"], "idiom_game")
+        self.assertEqual(updated["trace"]["turn_outcome"], "meaningful")
         self.assertEqual(updated["trace"]["static_audio_used"], True)
         self.assertEqual(updated["trace"]["static_audio_segment_count"], len(audio_plan))
         self.assertEqual(

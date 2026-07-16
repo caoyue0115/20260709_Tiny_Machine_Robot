@@ -168,15 +168,22 @@ def test_game_cloud_client_keeps_socket_across_turns_and_matches_turn_id() -> No
     assert "incoming_turn_id" in cloud_source
     assert "stale_turn_id" in cloud_source
     assert "char skill_name[32]" in cloud_header
+    assert "char turn_outcome[16]" in cloud_header
     assert "bool skill_active" in cloud_header
     assert "bool end_skill_state" in cloud_header
+    done_handler = cloud_source.split('strcmp(type, "done") == 0', 1)[1].split(
+        'strcmp(type, "idle_exit_ack") == 0', 1
+    )[0]
+    assert '"turn_outcome"' in done_handler
+    assert "uplink->session.turn_outcome" in done_handler
+    assert "sizeof(uplink->session.turn_outcome)" in done_handler
     finish_body = cloud_source.split("esp_err_t cloud_client_idiom_game_finish_turn", 1)[1].split(
         "void cloud_client_idiom_game_close", 1
     )[0]
     assert "cloud_client_opus_uplink_abort" not in finish_body
 
 
-def test_recoverable_game_turn_error_silently_rearms_without_reconnecting() -> None:
+def test_recoverable_game_turn_error_prompts_misheard_once_without_reconnecting() -> None:
     cloud_header = (ROOT / "esp_idf_demo" / "main" / "cloud_client.h").read_text(
         encoding="utf-8"
     )
@@ -207,10 +214,11 @@ def test_recoverable_game_turn_error_silently_rearms_without_reconnecting() -> N
         "if (ret == DEMO_CLOUD_ERR_RECOVERABLE_TURN)", 1
     )[1].split("if (ret != ESP_OK)", 1)[0]
     assert "cloud_client_idiom_game_close" not in recoverable_branch
-    assert "app_idiom_game_should_prompt_presence(metrics.error_code)" in recoverable_branch
-    assert "if (should_prompt && !presence_prompted)" in recoverable_branch
-    assert 'app_play_retry_prompt("idiom_game_presence"' in recoverable_branch
-    assert "action=silent_rearm" in recoverable_branch
+    assert "app_idiom_game_should_prompt_misheard(metrics.error_code)" in recoverable_branch
+    assert "if (should_prompt && !nonmeaningful_prompted)" in recoverable_branch
+    assert 'app_play_retry_prompt("idiom_game_misheard"' in recoverable_branch
+    assert "action=misheard_prompt_then_vad_rearm" in recoverable_branch
+    assert "action=nonmeaningful_prompt_suppressed" in recoverable_branch
     assert "ret = ESP_OK" in recoverable_branch
     assert "continue" in recoverable_branch
 
@@ -242,23 +250,65 @@ def test_main_has_wake_free_idiom_game_state_machine_and_echo_guard() -> None:
     assert "ret = ESP_OK" in timeout_branch
 
 
-def test_empty_game_turn_prompts_presence_once_then_rearms_vad() -> None:
+def test_empty_game_turn_prompts_misheard_once_then_rearms_vad() -> None:
     main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
 
     assert "#define APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS 1500" in main
-    assert "#define APP_IDIOM_GAME_PRESENCE_PROMPT_PATH" in main
-    assert '"/spiffs/idiom_game_presence_1.pcm"' in main
-    assert "app_idiom_game_should_prompt_presence" in main
+    assert "#define APP_IDIOM_GAME_MISHEARD_PROMPT_PATH" in main
+    assert '"/spiffs/idiom_game_misheard_1.pcm"' in main
+    assert "app_idiom_game_should_prompt_misheard" in main
     for error_code in ("empty_decoded_audio", "asr_empty_text", "asr_no_final_text"):
         assert f'"{error_code}"' in main
 
     game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
         "static esp_err_t run_trigger_pipeline", 1
     )[0]
-    assert "presence_prompted" in game_loop
-    assert 'app_play_retry_prompt("idiom_game_presence"' in game_loop
-    assert "APP_IDIOM_GAME_POST_PROMPT_IDLE_MS" in game_loop
-    assert "action=presence_prompt_then_vad_rearm" in game_loop
+    assert "nonmeaningful_prompted" in game_loop
+    assert 'app_play_retry_prompt("idiom_game_misheard"' in game_loop
+    assert "APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS" in game_loop
+    assert "action=misheard_prompt_then_vad_rearm" in game_loop
+
+
+def test_game_turn_outcome_controls_noise_circuit_breaker() -> None:
+    main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
+
+    game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
+        "static esp_err_t run_trigger_pipeline", 1
+    )[0]
+    for helper in (
+        "app_idiom_game_outcome_is_missing",
+        "app_idiom_game_outcome_is_meaningful",
+        "app_idiom_game_outcome_is_nonmeaningful",
+        "app_idiom_game_outcome_is_exit",
+    ):
+        assert helper in main
+        assert helper in game_loop
+    assert "realtime_session.turn_outcome" in game_loop
+    assert "nonmeaningful_prompted" in game_loop
+    assert "noise_hard_deadline_us == 0" in game_loop
+    assert "action=nonmeaningful_response_suppressed" in game_loop
+    assert "action=turn_outcome_compat_legacy" in game_loop
+    assert "noise_hard_deadline_us = speech_detected_us" in game_loop
+
+
+def test_noise_hard_deadline_is_checked_before_repeated_vad_can_start_another_turn() -> None:
+    main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
+    game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
+        "static esp_err_t run_trigger_pipeline", 1
+    )[0]
+
+    wait_index = game_loop.index("audio_in_wait_for_game_speech_start")
+    pre_wait_check = game_loop.index(
+        "if (noise_hard_deadline_us > 0 && esp_timer_get_time() >= noise_hard_deadline_us)"
+    )
+    post_wait_check = game_loop.index(
+        "if (ret == ESP_OK && noise_hard_deadline_us > 0 &&"
+    )
+    turn_start_index = game_loop.index("char turn_id[64]")
+
+    assert pre_wait_check < wait_index
+    assert wait_index < post_wait_check < turn_start_index
+    assert game_loop.count('"repeated_nonmeaningful_hard_timeout"') >= 2
 
 
 def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() -> None:
@@ -270,9 +320,11 @@ def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() ->
         encoding="utf-8"
     )
 
-    assert "#define APP_IDIOM_GAME_POST_PROMPT_IDLE_MS 30000" in main
-    assert "#define APP_IDIOM_GAME_NORMAL_IDLE_MS 60000" in main
-    assert "#define APP_IDIOM_GAME_HARD_IDLE_MS 180000" in main
+    assert "#define APP_IDIOM_GAME_NORMAL_IDLE_MS 25000" in main
+    assert "#define APP_IDIOM_GAME_POST_PRESENCE_IDLE_MS 20000" in main
+    assert "#define APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS 30000" in main
+    assert "#define APP_IDIOM_GAME_NOISE_HARD_IDLE_MS 60000" in main
+    assert "#define APP_IDIOM_GAME_HARD_IDLE_MS 180000" not in main
     assert "#define APP_IDIOM_GAME_IDLE_EXIT_ACK_TIMEOUT_MS 2000" in main
     assert "#define APP_IDIOM_GAME_IDLE_EXIT_PROMPT_PATH" in main
     assert '"/spiffs/idiom_game_idle_exit_1.pcm"' in main
@@ -287,10 +339,15 @@ def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() ->
     game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
         "static esp_err_t run_trigger_pipeline", 1
     )[0]
-    assert 'app_play_retry_prompt("idiom_game_idle_exit"' in game_loop
-    assert "cloud_client_idiom_game_idle_exit" in game_loop
+    assert 'app_play_retry_prompt("idiom_game_idle_exit"' in main
+    assert "app_idiom_game_perform_idle_exit" in game_loop
+    assert 'app_play_retry_prompt("idiom_game_presence"' in game_loop
+    assert "no_vad_after_presence_prompt" in game_loop
+    assert "no_vad_after_nonmeaningful_turn" in game_loop
+    assert "repeated_nonmeaningful_hard_timeout" in game_loop
+    assert "cloud_client_idiom_game_idle_exit" in main
     assert "s_local_idiom_context_until_us = 0" in game_loop
-    assert "action=restore_wakenet" in game_loop
+    assert "action=restore_wakenet" in main
 
 
 def test_game_multinet_hit_uses_text_session_before_cloud_asr_start() -> None:

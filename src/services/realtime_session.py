@@ -376,6 +376,8 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             if skill_result.skill_active is not None
             else not bool(skill_result.end_skill_state)
         )
+        if skill_result.turn_outcome is not None:
+            updated["trace"]["turn_outcome"] = skill_result.turn_outcome
         updated["trace"]["skill_route_ms"] = 0
         updated["trace"]["retrieval_ms"] = updated["trace"]["skill_route_ms"]
         if stream_to_session_start_abs_ms is not None:

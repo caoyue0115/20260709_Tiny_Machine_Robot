@@ -1,5 +1,9 @@
 # 成语接龙“你还在吗”与空闲退出现状报告（2026-07-15）
 
+> 2026-07-16 更新：本文记录的是上一版 60/30/180 秒策略，现已由
+> `docs/superpowers/summaries/2026-07-16-idiom-game-noise-circuit-breaker-current-state.md`
+> 取代。当前实现以新报告中的 25/20/30/60 秒策略和 `turn_outcome` 噪声熔断为准。
+
 ## 1. 版本状态
 
 - 工作区：`D:\20260709_Tiny_Machine_Robot-merge`

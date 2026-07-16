@@ -64,6 +64,7 @@ def _make_board_done_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "skill_name",
         "skill_active",
         "end_skill_state",
+        "turn_outcome",
         "question_text",
         "asr_provider",
         "error_code",
@@ -73,6 +74,7 @@ def _make_board_done_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: payload[key] for key in allowed_keys if key in payload}
 ASR_FALLBACK_NONE = "none"
 ASR_FALLBACK_CHOICES = ASR_PROVIDER_CHOICES | {ASR_FALLBACK_NONE, ""}
+IDIOM_TURN_OUTCOMES = {"meaningful", "invalid", "off_topic", "exit"}
 
 
 async def _run_asr_blocking_call(func, /, *args):
@@ -1189,11 +1191,15 @@ async def _wait_for_skill_metadata(
     skill_active = bool(
         trace.get("skill_active", skill_name == "idiom_game" and not end_skill_state)
     )
-    return {
+    metadata = {
         "skill_name": skill_name,
         "skill_active": skill_active,
         "end_skill_state": end_skill_state,
     }
+    turn_outcome = str(trace.get("turn_outcome") or "").strip()
+    if turn_outcome in IDIOM_TURN_OUTCOMES:
+        metadata["turn_outcome"] = turn_outcome
+    return metadata
 
 
 class _IdiomTurnWebSocket:

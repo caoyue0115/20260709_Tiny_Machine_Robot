@@ -71,6 +71,7 @@ typedef struct {
     char audio_stream_url[DEMO_CLOUD_AUDIO_URL_MAX_LEN];
     char turn_id[64];
     char skill_name[32];
+    char turn_outcome[16];
     bool skill_active;
     bool end_skill_state;
 } cloud_realtime_session_t;

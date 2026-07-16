@@ -3,6 +3,7 @@
   "audio_format": "pcm_s16le_16000hz_mono",
   "prompts": {
     "idiom_game_idle_exit_1.pcm": "那我们下次再玩吧。",
+    "idiom_game_misheard_1.pcm": "我没听清，你再说一次。",
     "idiom_game_presence_1.pcm": "你还在吗？",
     "record_prompt_1.pcm": "请讲。",
     "record_retry_error_1.pcm": "请重试。",
