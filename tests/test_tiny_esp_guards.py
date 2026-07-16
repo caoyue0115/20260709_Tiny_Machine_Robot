@@ -111,6 +111,7 @@ def test_multinet_keeps_start_mode_repeat_commands_but_not_exit_commands() -> No
 def test_game_capture_uses_real_200ms_preroll_and_200ms_trailing_silence() -> None:
     audio_header = (ROOT / "esp_idf_demo" / "main" / "audio_in.h").read_text(encoding="utf-8")
     audio_source = (ROOT / "esp_idf_demo" / "main" / "audio_in.c").read_text(encoding="utf-8")
+    config = (ROOT / "esp_idf_demo" / "main" / "config.h").read_text(encoding="utf-8")
 
     assert "#define AUDIO_IN_GAME_PREROLL_MS 200" in audio_header
     assert "#define AUDIO_IN_GAME_TRAILING_SILENCE_MS 200" in audio_header
@@ -121,9 +122,19 @@ def test_game_capture_uses_real_200ms_preroll_and_200ms_trailing_silence() -> No
     assert "AUDIO_IN_GAME_PREROLL_BYTES" in audio_source
     assert "AUDIO_IN_GAME_TRAILING_SILENCE_BYTES" in audio_source
     assert "calloc(1, AUDIO_IN_GAME_PREROLL_BYTES)" not in audio_source
+    assert "#define DEMO_RECORD_DURATION_SEC  4" in config
+
+    stream_body = audio_source.split(
+        "esp_err_t audio_in_stream_game_after_speech_start", 1
+    )[1].split("void audio_in_deinit", 1)[0]
+    assert "pcm_bytes < DEMO_AUDIO_BUFFER_BYTES" in stream_body
+    assert "trailing_silence_bytes >= AUDIO_IN_GAME_TRAILING_SILENCE_BYTES" in stream_body
 
 
 def test_game_vad_waits_for_mic_settle_and_requires_consecutive_speech() -> None:
+    audio_header = (ROOT / "esp_idf_demo" / "main" / "audio_in.h").read_text(
+        encoding="utf-8"
+    )
     audio_source = (ROOT / "esp_idf_demo" / "main" / "audio_in.c").read_text(
         encoding="utf-8"
     )
@@ -146,6 +157,12 @@ def test_game_vad_waits_for_mic_settle_and_requires_consecutive_speech() -> None
     assert '"stage=idiom_game_waiting_speech event=armed' in wait_body
     assert '"stage=idiom_game_waiting_speech event=speech_detected' in wait_body
     assert '"stage=idiom_game_waiting_speech event=timeout' in wait_body
+    wait_declaration = audio_header.split(
+        "esp_err_t audio_in_wait_for_game_speech_start", 1
+    )[1].split(");", 1)[0]
+    assert "uint32_t timeout_ms" in wait_declaration
+    assert "timeout_ms == 0" in wait_body
+    assert "(int64_t)timeout_ms * 1000" in wait_body
 
 
 def test_game_cloud_client_keeps_socket_across_turns_and_matches_turn_id() -> None:
@@ -215,10 +232,12 @@ def test_recoverable_game_turn_error_prompts_misheard_once_without_reconnecting(
     )[1].split("if (ret != ESP_OK)", 1)[0]
     assert "cloud_client_idiom_game_close" not in recoverable_branch
     assert "app_idiom_game_should_prompt_misheard(metrics.error_code)" in recoverable_branch
-    assert "if (should_prompt && !nonmeaningful_prompted)" in recoverable_branch
+    assert "if (should_prompt && !rescue_active)" in recoverable_branch
     assert 'app_play_retry_prompt("idiom_game_misheard"' in recoverable_branch
     assert "action=misheard_prompt_then_vad_rearm" in recoverable_branch
     assert "action=nonmeaningful_prompt_suppressed" in recoverable_branch
+    assert "app_idiom_game_grant_rescue_bonus" in recoverable_branch
+    assert "action=attempt_budget_preserved" in recoverable_branch
     assert "ret = ESP_OK" in recoverable_branch
     assert "continue" in recoverable_branch
 
@@ -263,13 +282,35 @@ def test_empty_game_turn_prompts_misheard_once_then_rearms_vad() -> None:
     game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
         "static esp_err_t run_trigger_pipeline", 1
     )[0]
-    assert "nonmeaningful_prompted" in game_loop
+    assert "rescue_active" in game_loop
+    assert "remaining_attempt_budget_us" in game_loop
     assert 'app_play_retry_prompt("idiom_game_misheard"' in game_loop
-    assert "APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS" in game_loop
+    assert "APP_IDIOM_GAME_RESCUE_BONUS_MS" in main
+    assert "app_idiom_game_grant_rescue_bonus" in game_loop
     assert "action=misheard_prompt_then_vad_rearm" in game_loop
 
 
-def test_game_turn_outcome_controls_noise_circuit_breaker() -> None:
+def test_exhausted_active_turn_does_not_play_misheard_immediately_before_exit() -> None:
+    main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
+    game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
+        "static esp_err_t run_trigger_pipeline", 1
+    )[0]
+    recoverable_branch = game_loop.split(
+        "if (ret == DEMO_CLOUD_ERR_RECOVERABLE_TURN)", 1
+    )[1].split("if (ret != ESP_OK)", 1)[0]
+    nonmeaningful_branch = game_loop.split("if (outcome_nonmeaningful)", 1)[1].split(
+        "if (!outcome_meaningful", 1
+    )[0]
+
+    for branch in (recoverable_branch, nonmeaningful_branch):
+        grant_index = branch.index("app_idiom_game_grant_rescue_bonus")
+        positive_budget_index = branch.index("if (remaining_attempt_budget_us > 0)")
+        prompt_index = branch.index('app_play_retry_prompt("idiom_game_misheard"')
+        assert grant_index < positive_budget_index < prompt_index
+        assert "action=rescue_prompt_suppressed_budget_exhausted" in branch
+
+
+def test_game_turn_outcome_controls_attempt_budget() -> None:
     main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
 
     game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
@@ -284,31 +325,36 @@ def test_game_turn_outcome_controls_noise_circuit_breaker() -> None:
         assert helper in main
         assert helper in game_loop
     assert "realtime_session.turn_outcome" in game_loop
-    assert "nonmeaningful_prompted" in game_loop
-    assert "noise_hard_deadline_us == 0" in game_loop
+    assert "rescue_active" in game_loop
+    assert "remaining_attempt_budget_us" in game_loop
     assert "action=nonmeaningful_response_suppressed" in game_loop
     assert "action=turn_outcome_compat_legacy" in game_loop
-    assert "noise_hard_deadline_us = speech_detected_us" in game_loop
+    assert "app_idiom_game_grant_rescue_bonus" in game_loop
+    assert "const bool play_response = game_ended || !outcome_nonmeaningful" in game_loop
+    assert "noise_hard_deadline_us" not in game_loop
 
 
-def test_noise_hard_deadline_is_checked_before_repeated_vad_can_start_another_turn() -> None:
+def test_attempt_budget_is_checked_before_vad_and_bounds_the_wait_window() -> None:
     main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
     game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
         "static esp_err_t run_trigger_pipeline", 1
     )[0]
+    consume_helper = main.split(
+        "static void app_idiom_game_consume_attempt_budget", 1
+    )[1].split("static uint32_t app_idiom_game_vad_wait_timeout_ms", 1)[0]
 
+    pre_wait_check = game_loop.index("if (remaining_attempt_budget_us <= 0)")
+    wait_timeout_index = game_loop.index("app_idiom_game_vad_wait_timeout_ms")
     wait_index = game_loop.index("audio_in_wait_for_game_speech_start")
-    pre_wait_check = game_loop.index(
-        "if (noise_hard_deadline_us > 0 && esp_timer_get_time() >= noise_hard_deadline_us)"
-    )
-    post_wait_check = game_loop.index(
-        "if (ret == ESP_OK && noise_hard_deadline_us > 0 &&"
-    )
+    consume_index = game_loop.index("app_idiom_game_consume_attempt_budget")
     turn_start_index = game_loop.index("char turn_id[64]")
 
-    assert pre_wait_check < wait_index
-    assert wait_index < post_wait_check < turn_start_index
-    assert game_loop.count('"repeated_nonmeaningful_hard_timeout"') >= 2
+    assert pre_wait_check < wait_timeout_index < wait_index
+    assert wait_index < consume_index < turn_start_index
+    assert "DEMO_WAIT_FOR_SPEECH_TIMEOUT_MS" in main
+    assert '"attempt_budget_exhausted"' in game_loop
+    assert "*remaining_budget_us -= elapsed_us;" in consume_helper
+    assert "elapsed_us >= *remaining_budget_us" not in consume_helper
 
 
 def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() -> None:
@@ -320,10 +366,12 @@ def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() ->
         encoding="utf-8"
     )
 
-    assert "#define APP_IDIOM_GAME_NORMAL_IDLE_MS 25000" in main
-    assert "#define APP_IDIOM_GAME_POST_PRESENCE_IDLE_MS 20000" in main
-    assert "#define APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS 30000" in main
-    assert "#define APP_IDIOM_GAME_NOISE_HARD_IDLE_MS 60000" in main
+    assert "#define APP_IDIOM_GAME_BASE_ATTEMPT_MS 15000" in main
+    assert "#define APP_IDIOM_GAME_RESCUE_BONUS_MS 10000" in main
+    assert "APP_IDIOM_GAME_NORMAL_IDLE_MS" not in main
+    assert "APP_IDIOM_GAME_POST_PRESENCE_IDLE_MS" not in main
+    assert "APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS" not in main
+    assert "APP_IDIOM_GAME_NOISE_HARD_IDLE_MS" not in main
     assert "#define APP_IDIOM_GAME_HARD_IDLE_MS 180000" not in main
     assert "#define APP_IDIOM_GAME_IDLE_EXIT_ACK_TIMEOUT_MS 2000" in main
     assert "#define APP_IDIOM_GAME_IDLE_EXIT_PROMPT_PATH" in main
@@ -342,9 +390,11 @@ def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() ->
     assert 'app_play_retry_prompt("idiom_game_idle_exit"' in main
     assert "app_idiom_game_perform_idle_exit" in game_loop
     assert 'app_play_retry_prompt("idiom_game_presence"' in game_loop
-    assert "no_vad_after_presence_prompt" in game_loop
-    assert "no_vad_after_nonmeaningful_turn" in game_loop
-    assert "repeated_nonmeaningful_hard_timeout" in game_loop
+    assert "rescue_active" in game_loop
+    assert "rescue_timeout_reason" in game_loop
+    assert "no_meaningful_after_presence_prompt" in game_loop
+    assert "no_meaningful_after_misheard_prompt" in game_loop
+    assert "attempt_budget_exhausted" in game_loop
     assert "cloud_client_idiom_game_idle_exit" in main
     assert "s_local_idiom_context_until_us = 0" in game_loop
     assert "action=restore_wakenet" in main

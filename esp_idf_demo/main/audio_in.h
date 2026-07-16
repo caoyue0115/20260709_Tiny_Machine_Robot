@@ -39,7 +39,8 @@ esp_err_t audio_in_wait_for_speech_start(uint8_t **out_speech_prefix,
 // returns at least the last 200 ms of available audio when speech starts.
 esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
                                               size_t *out_speech_prefix_bytes,
-                                              audio_in_wait_metrics_t *out_metrics);
+                                              audio_in_wait_metrics_t *out_metrics,
+                                              uint32_t timeout_ms);
 
 // Continues capture from an already-open microphone after speech start was detected.
 // The caller owns the returned buffer and must free() it.

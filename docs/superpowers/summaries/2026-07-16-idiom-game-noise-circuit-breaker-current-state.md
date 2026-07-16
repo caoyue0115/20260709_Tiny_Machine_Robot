@@ -1,247 +1,213 @@
-# 成语接龙紧凑退出与噪声熔断现状报告（2026-07-16）
+# 成语接龙 15+10 秒尝试余额现状报告（2026-07-16）
 
-## 1. 当前版本状态
+## 1. 版本与范围
 
 - 工作区：`D:\20260709_Tiny_Machine_Robot-merge`
 - 分支：`merge`
-- 基础提交：`f0fcd39 feat: add idle exit handling for idiom game`
-- 本报告对应的 B 方案代码尚未提交、推送、部署或烧录。
-- 云端已部署的是上一版 idle-exit 基线；本版 `turn_outcome` 协议仍需重新部署并重启 `18111`。
-- `esp_idf_demo/main/config.h`、`esp_idf_demo/sdkconfig.multinet_eval` 和本地部署 bundle 均未纳入功能改动。
-- DashScope 仍是预期 ASR provider，没有恢复 Volcengine。
+- 功能基线：`b777385 feat: add idiom game noise circuit breaker`
+- 本次只修改板端游戏计时、游戏专用 VAD 等待接口、静态守卫和文档。
+- 云端 WebSocket协议、`device_id`、`turn_id`、DashScope ASR、TTS provider和普通咖啡单轮链路均不修改。
+- `esp_idf_demo/main/config.h`、`esp_idf_demo/sdkconfig.multinet_eval` 和本地 bundle 不属于本次功能范围，不得提交。
 
-## 2. 目标行为总览
+## 2. 最终产品规则
 
-四种成语游戏模式共用同一套时间策略：
+每次机器人给出有效游戏回复并播放完成后，开始一轮新的尝试周期：
 
 ```text
-有效机器人回复播放结束
-→ 25秒没有VAD
+15秒基础余额
++ 首次挽救提示最多增加一次10秒
+= 每轮最多25秒用户交互预算
+```
+
+用户交互预算包括：
+
+```text
+本地VAD等待
+VAD触发后的录音
+等待ASR final和本轮结果
+```
+
+以下时间不扣预算：
+
+```text
+机器人回复或提示音播放
+播放完成后的200ms回声保护
+idle_exit ACK等待
+```
+
+### 2.1 完全静默
+
+```text
+有效回复播放完成
+→ 200ms回声保护
+→ 本地VAD等待累计15秒
 → 播放“你还在吗？”
-→ 再20秒没有VAD
+→ 增加一次10秒补救余额
+→ 仍无有效结果，余额耗尽
 → 播放“那我们下次再玩吧。”
-→ idle_exit
-→ 关闭游戏WebSocket并恢复WakeNet
+→ idle_exit并恢复WakeNet
 ```
 
-VAD触发但 ASR为空：
+墙钟时间会额外包含两段提示音和回声保护，但有效尝试预算固定为25秒。
+
+### 2.2 基础阶段首次空或无效
 
 ```text
-第一次非有效轮次
-→ 播放“我没听清，你再说一次。”
-→ 30秒没有新VAD则退出
-
-后续 empty / invalid / off_topic
-→ 不再播放非有效提示
-→ 静默重新armed
-→ 每轮可重新获得30秒安静等待
-→ 但第一次非有效轮次起60秒硬截止永不刷新
+15秒基础阶段内VAD触发
+→ 录音与ASR也继续扣除当前余额
+→ empty / invalid / off_topic
+→ 屏蔽服务器无效回复音频
+→ 本地只播放一次“我没听清，请再说一次”
+→ 在剩余基础余额上增加一次10秒
+→ 进入补救阶段
 ```
 
-有效成语、重复命令和难度切换会解除熔断，播放正常静态回复并重新开始25秒周期。显式退出和 `end_skill_state=true` 仍然立即结束游戏。
+例如第3秒得到无效结果，余额约为12+10=22秒；已经用掉的3秒不会丢失。第12秒得到无效结果，余额约为3+10=13秒。因此两条路径的用户交互预算上限都仍是25秒。
 
-## 3. WebSocket、VAD 与 ASR资源边界
+如果 active turn 在基础余额即将耗尽时开始，录音或ASR等待造成的超时保留为负余额。补救10秒先抵扣这段债务，不能通过慢ASR把总预算延长。
+
+如果这段超时债务已经用完新增的10秒，板端会跳过“我没听清”，直接在安全边界执行退出，避免连续播放“我没听清”和“那我们下次再玩吧”。
+
+### 2.3 补救阶段持续噪声
 
 ```text
-游戏WebSocket：游戏期间持续连接，idle时只有协议心跳
-板端麦克风：只为本地能量VAD和200ms pre-roll采样
-音频上传：只有确认VAD后才开始
-云端ASR：只有utterance_start后才创建
-utterance_end：停止音频输入，等待final/超时后销毁本轮ASR
+补救阶段VAD反复触发
+→ 每轮录音和ASR继续扣同一份余额
+→ empty / invalid / off_topic全部静默
+→ 不重复提示
+→ 不重置、不刷新、不增加余额
+→ 余额耗尽后退出
 ```
 
-播放任何机器人音频期间禁止 VAD上传。播放结束后先执行200ms回声保护，再回到本地 VAD。游戏退出后关闭持续 WebSocket、清除本地游戏上下文并恢复 WakeNet；用户下一次必须重新说“小明同学”。
+这样外界噪声不会让机器人反复播报“我没听清”，也不能无限产生ASR费用。只有 `meaningful` 才能取消退出并开启新的15秒周期。
 
-## 4. 当前VAD参数
+### 2.4 有效结果与主动退出
 
-| 参数 | 当前值 | 含义 |
+| 结果 | 板端行为 |
+|---|---|
+| `meaningful` | 有效成语、重复、难度切换；播放正常静态回复，重置为新15秒周期 |
+| `empty` | 基础阶段本地提示一次并进入补救；补救阶段静默 |
+| `invalid` | 同 `empty`，不播放服务器无效提示 |
+| `off_topic` | 同 `empty`，不播放服务器无关提示 |
+| `exit` / `end_skill_state=true` | 播放必要结束音频并立即结束，不等待预算 |
+| 缺失 `turn_outcome` | 兼容旧云端，视为成功轮次并重置15秒 |
+| 基础设施错误 | 不冒充“没听清”，不增加预算；已经消耗的时间仍扣除 |
+
+## 3. 状态机
+
+```text
+ROBOT_PLAYBACK
+  → ECHO_GUARD（200ms，不扣余额）
+  → BASE_VAD（15s余额）
+
+BASE_VAD --无VAD且余额耗尽--> PRESENCE_PROMPT
+PRESENCE_PROMPT --加10s一次--> RESCUE_VAD
+
+BASE_VAD --VAD/ASR非有效--> MISHEARD_PROMPT
+MISHEARD_PROMPT --剩余基础余额+10s一次--> RESCUE_VAD
+
+RESCUE_VAD --VAD/ASR非有效--> RESCUE_VAD（静默，继续扣余额）
+BASE_VAD/RESCUE_VAD --meaningful--> ROBOT_PLAYBACK（新15s）
+BASE_VAD/RESCUE_VAD --exit--> GAME_END
+RESCUE_VAD --余额耗尽--> IDLE_EXIT --> WakeNet
+```
+
+余额不足时不会开始新的 ASR。如果某轮已经在余额变为零前启动，则允许它完成，避免破坏 Opus、ASR final和 active turn资源；有效结果仍可恢复，否则在下一个安全边界退出。
+
+## 4. VAD与ASR边界
+
+| 参数 | 当前值 | 说明 |
 |---|---:|---|
-| 播放后回声保护 | 200ms | 防止扬声器回声触发上传 |
-| VAD内部armed保护 | 150ms | 麦克风刚打开时暂不接受触发 |
-| 启动阈值 | 900 | PCM16块平均绝对能量 |
-| 启动保持 | 128ms | 高能量必须连续保持 |
-| pre-roll | 200ms | 板端真实环形PCM，仅触发后上传 |
+| 播放后回声保护 | 200ms | 回声期间不允许触发上传，不扣尝试余额 |
+| VAD内部 armed 保护 | 150ms | 麦克风刚打开时先稳定；计入VAD等待预算 |
+| VAD启动阈值 | 900 | PCM16块平均绝对能量 |
+| VAD启动保持 | 128ms | 连续高能量达到该时长才确认开口 |
+| 真实 pre-roll | 200ms | 只存在板端环形缓冲；VAD确认后才上传 |
 | 尾静音阈值 | 300 | 小于等于该能量累计为静音 |
-| 尾静音目标 | 200ms | 达到后发送utterance_end |
-| VAD等待窗口 | 3s | 只用于周期性检查deadline；超时不上传 |
+| 尾静音结束 | 200ms | 达到后发送 `utterance_end` |
+| 单轮录音上限 | 约4s | 没有200ms尾静音时仍强制结束本轮录音 |
+| 单次VAD检查窗 | 最多3s | 最后一窗缩短到当前剩余余额 |
 
-因此计时器不是持续云端录音：25/20/30/60秒期间云端没有 ASR实例，也没有音频计费。
+准确资源链路：
 
-## 5. 云端 `turn_outcome` 协议
-
-持久游戏 WebSocket 的成功 `done` 新增可选字段：
-
-```json
-{
-  "type": "done",
-  "turn_id": "device-id-...",
-  "skill_name": "idiom_game",
-  "skill_active": true,
-  "end_skill_state": false,
-  "audio_stream_url": "...",
-  "turn_outcome": "meaningful"
-}
+```text
+游戏WebSocket持续连接
+→ idle时云端无ASR、板端不上传音频
+→ 本地VAD确认
+→ utterance_start创建本轮ASR
+→ 上传200ms pre-roll与实时Opus
+→ 200ms尾静音或约4秒上限
+→ utterance_end停止输入
+→ 等待asr_final或超时
+→ 销毁本轮ASR
+→ WebSocket继续空闲
 ```
 
-允许值：
+## 5. 设备与轮次隔离
 
-| outcome | 来源 | 板端行为 |
+- 游戏状态仍由云端按 `device_id`保存，设备断线重连不与其他设备串状态。
+- 每轮继续携带唯一 `turn_id`；迟到的 `done`不能被下一轮接收。
+- 自动退出发送唯一 `event_id` 和当前连接的设备身份。
+- 云端 `idle_exit`清理保持幂等；板端最多等 ACK 2秒，无论 ACK是否返回都清除本地上下文、关闭游戏WebSocket并恢复WakeNet。
+- 退出后用户必须重新说“小明同学”才能开始新的普通交互或游戏。
+
+## 6. 静态音频
+
+| 文件 | 文本 | 运行方式 |
 |---|---|---|
-| `meaningful` | 有效接龙、重复、难度切换 | 播放回复、清除熔断、重置25秒 |
-| `invalid` | 未知/重复/接错成语、低置信度 | 首次播放静态解释，后续熔断静默 |
-| `off_topic` | 无关内容 | 首次播放静态提示，后续熔断静默 |
-| `exit` | 主动退出、LLM exit、胜负结束 | 播放必要结束音频并退出 |
+| `idiom_game_presence_1.pcm` | 你还在吗？ | 板端 SPIFFS静态播放 |
+| `idiom_game_misheard_1.pcm` | 我没听清，你再说一次。 | 板端 SPIFFS静态播放，每轮最多一次 |
+| `idiom_game_idle_exit_1.pcm` | 那我们下次再玩吧。 | 板端 SPIFFS静态播放 |
 
-该字段直接从已有 `idiom_event`、`idiom_result` 和游戏最终状态导出，不增加 LLM请求。普通咖啡 realtime `done` 不包含该字段。
+本次没有新增音频素材，成语模式运行时仍不使用动态 TTS。
 
-新版板端将字段解析到固定16字节缓冲。字段缺失时按旧云端成功轮次兼容并记录 `action=turn_outcome_compat_legacy`；未知非空枚举按非有效轮次处理。所有 `done` 仍必须匹配当前 active `turn_id`。
+## 7. 成本边界
 
-## 6. 空ASR与基础设施错误
+- 完全静默的25秒尝试期只有本地VAD，不创建云端ASR。
+- 噪声只有达到启动阈值并连续保持128ms才会创建一次ASR。
+- 每个 active turn由200ms尾静音或约4秒录音上限结束。
+- active turn等待也扣总余额；补救阶段噪声不能刷新时间。
+- 因此单轮游戏等待期不会因连续噪声无限产生ASR请求或音频上传。
 
-只有以下可恢复错误属于 `empty`：
+## 8. 自动验证与部署状态
 
-```text
-empty_decoded_audio
-asr_empty_text
-asr_no_final_text
-```
-
-第一次命中时，从 VAD确认时刻算最早1.5秒后播放“我没听清，你再说一次。”，设置 `nonmeaningful_prompted=true`，并把60秒硬截止锚定在第一次非有效 VAD时刻。
-
-后续空结果记录：
+TDD与回归证据：
 
 ```text
-action=nonmeaningful_prompt_suppressed
-```
-
-不再播放提示。解码、网络、协议和 provider等基础设施错误不冒充空ASR，不播放“我没听清”，不清除游戏状态，也不获得一份新的空闲期限；回到 idle后继续使用错误前的绝对 deadline。
-
-## 7. 三种软时间路径
-
-### 7.1 正常静默
-
-```text
-回复结束后25秒无VAD
-→ “你还在吗？”
-→ 20秒无VAD
-→ no_vad_after_presence_prompt
-→ 退出
-```
-
-VAD窗口每3秒返回一次，因此实际提醒/退出允许约0～3秒检查延迟，不包含提示音自身播放时间。
-
-### 7.2 单次非有效轮次后静默
-
-```text
-首次empty / invalid / off_topic处理完成
-→ 30秒无VAD
-→ no_vad_after_nonmeaningful_turn
-→ 退出
-```
-
-`empty`首次播放本地“我没听清”；`invalid/off_topic`首次允许播放服务器已经生成的静态游戏提示。两者共享同一个 `nonmeaningful_prompted`锁，保证一次熔断周期最多只有一条非有效轮次提示。
-
-### 7.3 重复噪声硬截止
-
-```text
-第一次非有效轮次的VAD时刻
-→ 固定60秒 noise_hard_deadline
-→ 后续VAD、空ASR、invalid、off_topic均不得刷新
-→ repeated_nonmeaningful_hard_timeout
-→ 退出
-```
-
-硬截止在两个位置强制检查：
-
-1. 每次准备进入新 VAD等待窗口前。
-2. VAD已经检测到声音后、创建下一轮 ASR前。
-
-因此连续噪声即使每次都快速触发 VAD，也无法通过避免3秒等待超时来绕过60秒上限。若截止发生在 active turn或音频播放中，不中途破坏资源，而是在回到首个安全 idle边界时退出。
-
-## 8. 强制退出过程
-
-所有自动退出统一调用同一个板端 helper：
-
-```text
-播放“那我们下次再玩吧。”
-→ 生成唯一event_id
-→ WebSocket发送idle_exit和reason
-→ 云端按连接X-Device-ID清除游戏状态
-→ 最多等待2秒idle_exit_ack
-→ 无论ACK是否成功都清除本地上下文
-→ 关闭游戏WebSocket
-→ 释放麦克风资源
-→ 恢复WakeNet
-```
-
-云端清理保持幂等，测试设备没有活动状态时 `cleared=false` 仍是成功 ACK。
-
-## 9. 静态音频
-
-| 文件 | 文本 | 大小 | 格式 |
-|---|---|---:|---|
-| `idiom_game_presence_1.pcm` | 你还在吗？ | 30,720 bytes | PCM16LE / 16kHz / mono |
-| `idiom_game_misheard_1.pcm` | 我没听清，你再说一次。 | 64,924 bytes | PCM16LE / 16kHz / mono |
-| `idiom_game_idle_exit_1.pcm` | 那我们下次再玩吧。 | 53,760 bytes | PCM16LE / 16kHz / mono |
-
-新素材由云端已配置的 DashScope/Qwen realtime TTS一次性生成。原始带标点版本超过板端64KiB上限；最终使用相同口语内容、去除生成输入中的停顿标点，并仅裁剪经波形确认的首尾静音，保留约20ms安全余量。运行时只读取 SPIFFS，不调用动态 TTS。
-
-## 10. 自动验证证据
-
-TDD过程：
-
-- 云端 outcome分类测试先因 `SkillResult`缺字段产生预期失败，最小实现后通过。
-- WebSocket协议测试先因 `done`缺键产生3个预期失败，实现后通过。
-- ESP解析守卫先因结构体缺字段失败，实现后通过。
-- PCM素材测试先因文件和清单缺失失败，生成并登记后通过。
-- 25/20/30/60状态机守卫先产生4个预期失败，实现后通过。
-- 连续噪声硬截止 preflight测试先失败，实现双检查后通过。
-
-最终结果：
-
-```text
-聚焦云端/ESP回归：173 passed, 19 skipped, 1 deselected, 29 subtests passed
-最终未过滤全量：297 passed, 19 skipped, 1 known failure, 49 subtests passed
-精确排除既有断言：297 passed, 19 skipped, 1 deselected, 49 subtests passed
-ESP守卫和素材：54 passed, 1 deselected
+新增“超时债务”守卫：先失败，最小实现后通过
+新增“余额耗尽时不连续播放两条提示”守卫：先失败，最小实现后通过
+ESP静态守卫：17 passed, 1 deselected
+聚焦云端/板端回归：173 passed, 19 skipped, 1 deselected, 29 subtests passed
+未过滤全量：298 passed, 19 skipped, 1 known failure, 49 subtests passed
+精确排除既有断言：298 passed, 19 skipped, 1 deselected, 49 subtests passed
 ESP-IDF 5.5.4 build：成功
 ```
 
-唯一失败仍是修改前遗留的 Volcengine默认值断言；当前业务明确要求 DashScope，没有修改、隐藏或计为本次回归。
+唯一未过滤失败仍是业务修改前遗留的 Volcengine默认值断言：当前产品明确使用 DashScope，不得为了通过旧测试恢复 Volcengine。该失败已单独记录，没有计为本次功能回归，也没有隐藏其他失败。
 
 最终应用镜像：
 
 ```text
-esp_idf_demo.bin = 0x1c4440 bytes
+esp_idf_demo.bin = 0x1c4a20 bytes
 最小app分区 = 0x300000 bytes
-剩余 = 0x13bbc0 bytes（41%）
+剩余 = 0x13b5e0 bytes（41%）
 ```
 
-编译只有项目原有未使用 OTA符号警告，没有本功能新增错误。
+编译只有项目原有的未使用 OTA符号警告，没有本次功能新增的编译错误。
 
-## 11. 部署与实机验收
+当前代码尚未提交、推送、部署或烧录。
 
-部署顺序必须是：
+部署时需要同时更新协议兼容的云端基线与新固件；本次新增行为本身位于板端，所以至少必须重新 `idf.py build`、`flash`、`monitor`。普通云端服务若已经是包含 `turn_outcome` 和 `idle_exit` 的版本，本次不需要额外云端代码变更。
 
-```text
-提交并推送merge分支
-→ bundle传云端
-→ 云端应用提交并重启18111
-→ healthz与持久游戏WebSocket smoke
-→ ESP-IDF完整flash（包含storage.bin）
-→ monitor实机验收
-```
+## 9. 实机验收清单
 
-由于新增 `idiom_game_misheard_1.pcm`，不能只执行 `app-flash`。
-
-最低实机验收：
-
-1. 四种模式分别确认约25秒播放“你还在吗”，再约20秒退出并恢复“小明同学”。
-2. 一次空ASR只播放一次“我没听清，你再说一次”，随后安静约30秒退出。
-3. 连续制造噪声，后续提示保持静默，第一次非有效轮次后约60秒强制退出。
-4. 熔断期间说出有效成语，确认立即解除熔断并重新开始25秒周期。
-5. `invalid/off_topic`首次可播必要提示，后续相同噪声不再下载或播放回复音频。
-6. 主动说“退出游戏”立即结束；退出后直接说成语无效，必须重新说“小明同学”。
-7. 普通咖啡问答行为不变。
-
-当前代码与自动验证已经达到“可建议提交、待部署和硬件验收”状态；尚未执行提交、推送、部署或烧录。
+1. 进入四种成语模式，确认正常接龙无需再次唤醒。
+2. 有效回复后完全静默：约15秒播放“你还在吗？”，再给10秒有效尝试预算后退出。
+3. 基础阶段尽早制造一次空ASR：只播放一次“我没听清，请再说一次”，总有效尝试时间仍约25秒。
+4. 在基础阶段较晚制造空ASR：确认未用余额与10秒补救叠加，而不是从无效时刻重新给25秒。
+5. 补救阶段持续制造噪声：不再播放“我没听清”，余额仍耗尽并退出。
+6. 补救阶段说出有效成语：正常回复，并重新开始15秒基础周期。
+7. 说重复或难度切换命令：视为有效结果并重置周期。
+8. 说“退出游戏 / 不玩了 / 结束吧”：立即退出；直接说成语不能继续，必须重新说“小明同学”。
+9. 自动退出应播放“那我们下次再玩吧”，关闭游戏WebSocket并恢复WakeNet。
+10. 普通咖啡问答行为保持不变。

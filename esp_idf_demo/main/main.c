@@ -649,10 +649,8 @@ static esp_err_t app_validate_runtime_config(void)
 #define APP_IDIOM_GAME_MAX_RECONNECT_ATTEMPTS 3
 #define APP_IDIOM_GAME_RECONNECT_DELAY_MS 500
 #define APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS 1500
-#define APP_IDIOM_GAME_NORMAL_IDLE_MS 25000
-#define APP_IDIOM_GAME_POST_PRESENCE_IDLE_MS 20000
-#define APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS 30000
-#define APP_IDIOM_GAME_NOISE_HARD_IDLE_MS 60000
+#define APP_IDIOM_GAME_BASE_ATTEMPT_MS 15000
+#define APP_IDIOM_GAME_RESCUE_BONUS_MS 10000
 #define APP_IDIOM_GAME_IDLE_EXIT_ACK_TIMEOUT_MS 2000
 #define APP_IDIOM_GAME_PRESENCE_PROMPT_PATH "/spiffs/idiom_game_presence_1.pcm"
 #define APP_IDIOM_GAME_MISHEARD_PROMPT_PATH "/spiffs/idiom_game_misheard_1.pcm"
@@ -831,9 +829,51 @@ static bool app_idiom_game_outcome_is_nonmeaningful(const char *value)
            !app_idiom_game_outcome_is_exit(value);
 }
 
-static int64_t app_idiom_game_deadline_after_ms(int timeout_ms)
+static void app_idiom_game_consume_attempt_budget(int64_t *remaining_budget_us,
+                                                  int64_t interval_started_us)
 {
-    return esp_timer_get_time() + ((int64_t)timeout_ms * 1000);
+    if (remaining_budget_us == NULL || interval_started_us <= 0) {
+        return;
+    }
+    const int64_t elapsed_us = esp_timer_get_time() - interval_started_us;
+    if (elapsed_us <= 0) {
+        return;
+    }
+    // Preserve any overrun as negative debt. A turn that starts just before the
+    // base window expires must consume the same rescue bonus as an earlier turn.
+    *remaining_budget_us -= elapsed_us;
+}
+
+static uint32_t app_idiom_game_vad_wait_timeout_ms(int64_t remaining_budget_us)
+{
+    if (remaining_budget_us <= 0) {
+        return 0;
+    }
+    int64_t timeout_ms = (remaining_budget_us + 999) / 1000;
+    if (timeout_ms > DEMO_WAIT_FOR_SPEECH_TIMEOUT_MS) {
+        timeout_ms = DEMO_WAIT_FOR_SPEECH_TIMEOUT_MS;
+    }
+    return (uint32_t)(timeout_ms > 0 ? timeout_ms : 1);
+}
+
+static void app_idiom_game_grant_rescue_bonus(int64_t *remaining_budget_us,
+                                               bool *rescue_active,
+                                               const char **rescue_timeout_reason,
+                                               const char *reason)
+{
+    if (remaining_budget_us == NULL || rescue_active == NULL ||
+        rescue_timeout_reason == NULL || *rescue_active) {
+        return;
+    }
+    *remaining_budget_us += (int64_t)APP_IDIOM_GAME_RESCUE_BONUS_MS * 1000;
+    *rescue_active = true;
+    *rescue_timeout_reason = reason;
+    ESP_LOGI(TAG,
+             "idiom_game_budget action=rescue_bonus_granted bonus_ms=%d "
+             "remaining_ms=%lld reason=%s",
+             APP_IDIOM_GAME_RESCUE_BONUS_MS,
+             (long long)(*remaining_budget_us / 1000),
+             reason != NULL ? reason : "attempt_budget_exhausted");
 }
 
 static esp_err_t app_idiom_game_perform_idle_exit(
@@ -886,19 +926,35 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
     }
 
     uint32_t turn_sequence = 0;
-    bool presence_prompted = false;
-    bool nonmeaningful_prompted = false;
+    bool rescue_active = false;
+    const char *rescue_timeout_reason = NULL;
     bool needs_echo_guard = true;
-    int64_t no_vad_deadline_us = app_idiom_game_deadline_after_ms(APP_IDIOM_GAME_NORMAL_IDLE_MS);
-    int64_t noise_hard_deadline_us = 0;
+    int64_t remaining_attempt_budget_us =
+        (int64_t)APP_IDIOM_GAME_BASE_ATTEMPT_MS * 1000;
     while (app_local_idiom_context_active(esp_timer_get_time())) {
-        if (noise_hard_deadline_us > 0 && esp_timer_get_time() >= noise_hard_deadline_us) {
+        if (remaining_attempt_budget_us <= 0) {
+            if (!rescue_active) {
+                app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
+                app_set_state(state, APP_STATE_PLAYING);
+                app_play_retry_prompt("idiom_game_presence",
+                                      APP_IDIOM_GAME_PRESENCE_PROMPT_PATH);
+                app_idiom_game_grant_rescue_bonus(
+                    &remaining_attempt_budget_us,
+                    &rescue_active,
+                    &rescue_timeout_reason,
+                    "no_meaningful_after_presence_prompt");
+                needs_echo_guard = true;
+                app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
+                continue;
+            }
             ret = app_idiom_game_perform_idle_exit(
                 state,
                 &game_state,
                 client,
                 &turn_sequence,
-                "repeated_nonmeaningful_hard_timeout");
+                rescue_timeout_reason != NULL
+                    ? rescue_timeout_reason
+                    : "attempt_budget_exhausted");
             break;
         }
         if (needs_echo_guard) {
@@ -912,60 +968,22 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
         uint8_t *speech_prefix = NULL;
         size_t speech_prefix_bytes = 0;
         audio_in_wait_metrics_t wait_metrics = {0};
+        const uint32_t vad_wait_timeout_ms =
+            app_idiom_game_vad_wait_timeout_ms(remaining_attempt_budget_us);
+        const int64_t vad_wait_started_us = esp_timer_get_time();
         ret = audio_in_wait_for_game_speech_start(&speech_prefix,
                                                   &speech_prefix_bytes,
-                                                  &wait_metrics);
-        if (ret == ESP_OK && noise_hard_deadline_us > 0 &&
-            esp_timer_get_time() >= noise_hard_deadline_us) {
-            free(speech_prefix);
-            speech_prefix = NULL;
-            ret = app_idiom_game_perform_idle_exit(
-                state,
-                &game_state,
-                client,
-                &turn_sequence,
-                "repeated_nonmeaningful_hard_timeout");
-            break;
-        }
+                                                  &wait_metrics,
+                                                  vad_wait_timeout_ms);
+        app_idiom_game_consume_attempt_budget(&remaining_attempt_budget_us,
+                                              vad_wait_started_us);
         if (ret == DEMO_AUDIO_IN_ERR_WAIT_TIMEOUT) {
             app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
-            const int64_t now_us = esp_timer_get_time();
-            const bool no_vad_expired =
-                no_vad_deadline_us > 0 && now_us >= no_vad_deadline_us;
-            const bool noise_hard_expired =
-                noise_hard_deadline_us > 0 && now_us >= noise_hard_deadline_us;
-            if (no_vad_expired && !presence_prompted && !nonmeaningful_prompted &&
-                !noise_hard_expired) {
-                app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
-                app_set_state(state, APP_STATE_PLAYING);
-                app_play_retry_prompt("idiom_game_presence",
-                                      APP_IDIOM_GAME_PRESENCE_PROMPT_PATH);
-                presence_prompted = true;
-                needs_echo_guard = true;
-                no_vad_deadline_us = app_idiom_game_deadline_after_ms(
-                    APP_IDIOM_GAME_POST_PRESENCE_IDLE_MS);
-                app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
-                ESP_LOGI(TAG,
-                         "idiom_game_idle action=presence_prompt_then_vad_rearm "
-                         "next_idle_ms=%d",
-                         APP_IDIOM_GAME_POST_PRESENCE_IDLE_MS);
-                ret = ESP_OK;
-                continue;
-            }
-            if (no_vad_expired || noise_hard_expired) {
-                const char *idle_reason = noise_hard_expired
-                                              ? "repeated_nonmeaningful_hard_timeout"
-                                              : (nonmeaningful_prompted
-                                                     ? "no_vad_after_nonmeaningful_turn"
-                                                     : "no_vad_after_presence_prompt");
-                ret = app_idiom_game_perform_idle_exit(
-                    state,
-                    &game_state,
-                    client,
-                    &turn_sequence,
-                    idle_reason);
-                break;
-            }
+            ESP_LOGI(TAG,
+                     "idiom_game_budget action=vad_wait_timeout remaining_ms=%lld "
+                     "rescue_active=%d",
+                     (long long)(remaining_attempt_budget_us / 1000),
+                     rescue_active);
             ret = ESP_OK;
             continue;
         }
@@ -982,8 +1000,6 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
                  (unsigned long long)esp_timer_get_time(),
                  (unsigned)++turn_sequence);
         const int64_t speech_detected_us = esp_timer_get_time();
-        const int64_t turn_soft_deadline_us = no_vad_deadline_us;
-        no_vad_deadline_us = 0;
         app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_UPLOADING);
         app_set_state(state, APP_STATE_RECORDING);
         app_idiom_game_capture_ctx_t capture_ctx = {
@@ -1011,11 +1027,12 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
             cloud_realtime_session_t local_session = {0};
             app_set_state(state, APP_STATE_POSTING_SESSION);
             ret = app_local_command_submit_text_session(&capture_ctx.local_result, &local_session);
+            app_idiom_game_consume_attempt_budget(&remaining_attempt_budget_us,
+                                                  speech_detected_us);
             if (ret != ESP_OK) {
                 app_play_retry_prompt("idiom_game_local_command_failed",
                                       DEMO_RECORD_RETRY_ERROR_PROMPT_PATH);
                 needs_echo_guard = true;
-                no_vad_deadline_us = turn_soft_deadline_us;
                 ret = ESP_OK;
                 continue;
             }
@@ -1026,16 +1043,18 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
             if (ret != ESP_OK) {
                 break;
             }
-            presence_prompted = false;
-            nonmeaningful_prompted = false;
+            rescue_active = false;
+            rescue_timeout_reason = NULL;
             needs_echo_guard = true;
-            no_vad_deadline_us = app_idiom_game_deadline_after_ms(APP_IDIOM_GAME_NORMAL_IDLE_MS);
-            noise_hard_deadline_us = 0;
+            remaining_attempt_budget_us =
+                (int64_t)APP_IDIOM_GAME_BASE_ATTEMPT_MS * 1000;
             app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
             continue;
         }
         if (ret != ESP_OK) {
             app_local_pcm_capture_free(&capture_ctx.capture);
+            app_idiom_game_consume_attempt_budget(&remaining_attempt_budget_us,
+                                                  speech_detected_us);
             cloud_client_idiom_game_close(client);
             client = NULL;
             ret = app_idiom_game_connect_with_retry(&client, &metrics);
@@ -1044,20 +1063,20 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
             }
             app_play_retry_prompt("idiom_game_turn_upload_failed", DEMO_RECORD_RETRY_ERROR_PROMPT_PATH);
             needs_echo_guard = true;
-            no_vad_deadline_us = turn_soft_deadline_us;
             continue;
         }
         if (!capture_ctx.cloud_turn_started) {
             ret = app_idiom_game_start_cloud_turn(&capture_ctx);
             if (ret != ESP_OK) {
                 app_local_pcm_capture_free(&capture_ctx.capture);
+                app_idiom_game_consume_attempt_budget(&remaining_attempt_budget_us,
+                                                      speech_detected_us);
                 cloud_client_idiom_game_close(client);
                 client = NULL;
                 ret = app_idiom_game_connect_with_retry(&client, &metrics);
                 if (ret != ESP_OK) {
                     break;
                 }
-                no_vad_deadline_us = turn_soft_deadline_us;
                 continue;
             }
         }
@@ -1065,32 +1084,42 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
         app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_WAITING_REPLY);
         cloud_realtime_session_t realtime_session = {0};
         ret = cloud_client_idiom_game_finish_turn(client, turn_id, &realtime_session);
+        app_idiom_game_consume_attempt_budget(&remaining_attempt_budget_us,
+                                              speech_detected_us);
         if (ret == DEMO_CLOUD_ERR_RECOVERABLE_TURN) {
             const bool should_prompt =
                 app_idiom_game_should_prompt_misheard(metrics.error_code);
-            if (should_prompt && noise_hard_deadline_us == 0) {
-                noise_hard_deadline_us = speech_detected_us +
-                    ((int64_t)APP_IDIOM_GAME_NOISE_HARD_IDLE_MS * 1000);
-            }
-            if (should_prompt && !nonmeaningful_prompted) {
-                const int64_t prompt_floor_us =
-                    speech_detected_us + ((int64_t)APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS * 1000);
-                const int64_t now_us = esp_timer_get_time();
-                if (now_us < prompt_floor_us) {
-                    vTaskDelay(pdMS_TO_TICKS((prompt_floor_us - now_us + 999) / 1000));
+            if (should_prompt && !rescue_active) {
+                app_idiom_game_grant_rescue_bonus(
+                    &remaining_attempt_budget_us,
+                    &rescue_active,
+                    &rescue_timeout_reason,
+                    "no_meaningful_after_misheard_prompt");
+                if (remaining_attempt_budget_us > 0) {
+                    const int64_t prompt_floor_us =
+                        speech_detected_us +
+                        ((int64_t)APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS * 1000);
+                    const int64_t now_us = esp_timer_get_time();
+                    if (now_us < prompt_floor_us) {
+                        vTaskDelay(pdMS_TO_TICKS((prompt_floor_us - now_us + 999) / 1000));
+                    }
+                    app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
+                    app_set_state(state, APP_STATE_PLAYING);
+                    app_play_retry_prompt("idiom_game_misheard",
+                                          APP_IDIOM_GAME_MISHEARD_PROMPT_PATH);
+                    needs_echo_guard = true;
+                    ESP_LOGI(TAG,
+                             "idiom_game_turn_recoverable turn_id=%s error_code=%s "
+                             "action=misheard_prompt_then_vad_rearm",
+                             turn_id,
+                             metrics.error_code);
+                } else {
+                    ESP_LOGW(TAG,
+                             "idiom_game_turn_recoverable turn_id=%s error_code=%s "
+                             "action=rescue_prompt_suppressed_budget_exhausted",
+                             turn_id,
+                             metrics.error_code);
                 }
-                app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
-                app_set_state(state, APP_STATE_PLAYING);
-                app_play_retry_prompt("idiom_game_misheard",
-                                      APP_IDIOM_GAME_MISHEARD_PROMPT_PATH);
-                presence_prompted = false;
-                nonmeaningful_prompted = true;
-                needs_echo_guard = true;
-                ESP_LOGI(TAG,
-                         "idiom_game_turn_recoverable turn_id=%s error_code=%s "
-                         "action=misheard_prompt_then_vad_rearm",
-                         turn_id,
-                         metrics.error_code);
             } else if (should_prompt) {
                 ESP_LOGW(TAG,
                          "idiom_game_turn_recoverable turn_id=%s error_code=%s "
@@ -1104,10 +1133,11 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
                          turn_id,
                          metrics.error_code[0] != '\0' ? metrics.error_code : "unknown");
             }
-            no_vad_deadline_us = should_prompt
-                                     ? app_idiom_game_deadline_after_ms(
-                                           APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS)
-                                     : turn_soft_deadline_us;
+            ESP_LOGI(TAG,
+                     "idiom_game_budget action=attempt_budget_preserved "
+                     "remaining_ms=%lld rescue_active=%d",
+                     (long long)(remaining_attempt_budget_us / 1000),
+                     rescue_active);
             app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
             app_set_state(state, APP_STATE_WAITING_SPEECH);
             ret = ESP_OK;
@@ -1122,7 +1152,6 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
             }
             app_play_retry_prompt("idiom_game_turn_failed", DEMO_RECORD_RETRY_ERROR_PROMPT_PATH);
             needs_echo_guard = true;
-            no_vad_deadline_us = turn_soft_deadline_us;
             continue;
         }
 
@@ -1142,13 +1171,8 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
                      "idiom_game_turn turn_id=%s action=turn_outcome_compat_legacy",
                      turn_id);
         }
-        if (outcome_nonmeaningful && noise_hard_deadline_us == 0) {
-            noise_hard_deadline_us = speech_detected_us +
-                ((int64_t)APP_IDIOM_GAME_NOISE_HARD_IDLE_MS * 1000);
-        }
 
-        const bool play_response = game_ended || !outcome_nonmeaningful ||
-                                   !nonmeaningful_prompted;
+        const bool play_response = game_ended || !outcome_nonmeaningful;
         if (play_response) {
             app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
             app_set_state(state, APP_STATE_PLAYING);
@@ -1179,13 +1203,38 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
         }
 
         if (outcome_nonmeaningful) {
-            if (!nonmeaningful_prompted) {
-                nonmeaningful_prompted = true;
-                needs_echo_guard = true;
+            if (!rescue_active) {
+                app_idiom_game_grant_rescue_bonus(
+                    &remaining_attempt_budget_us,
+                    &rescue_active,
+                    &rescue_timeout_reason,
+                    "no_meaningful_after_misheard_prompt");
+                if (remaining_attempt_budget_us > 0) {
+                    const int64_t prompt_floor_us =
+                        speech_detected_us +
+                        ((int64_t)APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS * 1000);
+                    const int64_t now_us = esp_timer_get_time();
+                    if (now_us < prompt_floor_us) {
+                        vTaskDelay(pdMS_TO_TICKS((prompt_floor_us - now_us + 999) / 1000));
+                    }
+                    app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
+                    app_set_state(state, APP_STATE_PLAYING);
+                    app_play_retry_prompt("idiom_game_misheard",
+                                          APP_IDIOM_GAME_MISHEARD_PROMPT_PATH);
+                    needs_echo_guard = true;
+                } else {
+                    ESP_LOGW(TAG,
+                             "idiom_game_turn turn_id=%s outcome=%s "
+                             "action=rescue_prompt_suppressed_budget_exhausted",
+                             turn_id,
+                             realtime_session.turn_outcome);
+                }
             }
-            presence_prompted = false;
-            no_vad_deadline_us = app_idiom_game_deadline_after_ms(
-                APP_IDIOM_GAME_POST_NONMEANINGFUL_IDLE_MS);
+            ESP_LOGI(TAG,
+                     "idiom_game_budget action=attempt_budget_preserved "
+                     "remaining_ms=%lld rescue_active=%d",
+                     (long long)(remaining_attempt_budget_us / 1000),
+                     rescue_active);
             app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
             continue;
         }
@@ -1196,11 +1245,11 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
                      turn_id,
                      realtime_session.turn_outcome);
         }
-        presence_prompted = false;
-        nonmeaningful_prompted = false;
+        rescue_active = false;
+        rescue_timeout_reason = NULL;
         needs_echo_guard = true;
-        no_vad_deadline_us = app_idiom_game_deadline_after_ms(APP_IDIOM_GAME_NORMAL_IDLE_MS);
-        noise_hard_deadline_us = 0;
+        remaining_attempt_budget_us =
+            (int64_t)APP_IDIOM_GAME_BASE_ATTEMPT_MS * 1000;
         app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_SOCKET_IDLE);
     }
 

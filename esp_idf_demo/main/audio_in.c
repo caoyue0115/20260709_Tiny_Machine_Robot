@@ -425,9 +425,10 @@ esp_err_t audio_in_wait_for_speech_start(uint8_t **out_speech_prefix,
 
 esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
                                               size_t *out_speech_prefix_bytes,
-                                              audio_in_wait_metrics_t *out_metrics)
+                                              audio_in_wait_metrics_t *out_metrics,
+                                              uint32_t timeout_ms)
 {
-    if (out_speech_prefix == NULL || out_speech_prefix_bytes == NULL) {
+    if (out_speech_prefix == NULL || out_speech_prefix_bytes == NULL || timeout_ms == 0) {
         return ESP_ERR_INVALID_ARG;
     }
     *out_speech_prefix = NULL;
@@ -453,7 +454,7 @@ esp_err_t audio_in_wait_for_game_speech_start(uint8_t **out_speech_prefix,
     const int64_t armed_at_us =
         wait_start_us + (int64_t)DEMO_WAITING_SPEECH_ARM_MS * 1000;
     const int64_t timeout_at_us =
-        wait_start_us + (int64_t)DEMO_WAIT_FOR_SPEECH_TIMEOUT_MS * 1000;
+        wait_start_us + (int64_t)timeout_ms * 1000;
     size_t ring_write_offset = 0;
     size_t ring_valid_bytes = 0;
     size_t hold_bytes = 0;
