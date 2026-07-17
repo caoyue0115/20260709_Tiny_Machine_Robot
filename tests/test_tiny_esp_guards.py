@@ -233,7 +233,7 @@ def test_recoverable_game_turn_error_prompts_misheard_once_without_reconnecting(
     assert "cloud_client_idiom_game_close" not in recoverable_branch
     assert "app_idiom_game_should_prompt_misheard(metrics.error_code)" in recoverable_branch
     assert "if (should_prompt && !rescue_active)" in recoverable_branch
-    assert 'app_play_retry_prompt("idiom_game_misheard"' in recoverable_branch
+    assert 'app_play_idiom_cloud_prompt("misheard"' in recoverable_branch
     assert "action=misheard_prompt_then_vad_rearm" in recoverable_branch
     assert "action=nonmeaningful_prompt_suppressed" in recoverable_branch
     assert "app_idiom_game_grant_rescue_bonus" in recoverable_branch
@@ -273,8 +273,8 @@ def test_empty_game_turn_prompts_misheard_once_then_rearms_vad() -> None:
     main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
 
     assert "#define APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS 1500" in main
-    assert "#define APP_IDIOM_GAME_MISHEARD_PROMPT_PATH" in main
-    assert '"/spiffs/idiom_game_misheard_1.pcm"' in main
+    assert "APP_IDIOM_GAME_MISHEARD_PROMPT_PATH" not in main
+    assert 'app_play_idiom_cloud_prompt("misheard")' in main
     assert "app_idiom_game_should_prompt_misheard" in main
     for error_code in ("empty_decoded_audio", "asr_empty_text", "asr_no_final_text"):
         assert f'"{error_code}"' in main
@@ -284,7 +284,7 @@ def test_empty_game_turn_prompts_misheard_once_then_rearms_vad() -> None:
     )[0]
     assert "rescue_active" in game_loop
     assert "remaining_attempt_budget_us" in game_loop
-    assert 'app_play_retry_prompt("idiom_game_misheard"' in game_loop
+    assert 'app_play_idiom_cloud_prompt("misheard"' in game_loop
     assert "APP_IDIOM_GAME_RESCUE_BONUS_MS" in main
     assert "app_idiom_game_grant_rescue_bonus" in game_loop
     assert "action=misheard_prompt_then_vad_rearm" in game_loop
@@ -305,7 +305,7 @@ def test_exhausted_active_turn_does_not_play_misheard_immediately_before_exit() 
     for branch in (recoverable_branch, nonmeaningful_branch):
         grant_index = branch.index("app_idiom_game_grant_rescue_bonus")
         positive_budget_index = branch.index("if (remaining_attempt_budget_us > 0)")
-        prompt_index = branch.index('app_play_retry_prompt("idiom_game_misheard"')
+        prompt_index = branch.index('app_play_idiom_cloud_prompt("misheard"')
         assert grant_index < positive_budget_index < prompt_index
         assert "action=rescue_prompt_suppressed_budget_exhausted" in branch
 
@@ -374,8 +374,11 @@ def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() ->
     assert "APP_IDIOM_GAME_NOISE_HARD_IDLE_MS" not in main
     assert "#define APP_IDIOM_GAME_HARD_IDLE_MS 180000" not in main
     assert "#define APP_IDIOM_GAME_IDLE_EXIT_ACK_TIMEOUT_MS 2000" in main
-    assert "#define APP_IDIOM_GAME_IDLE_EXIT_PROMPT_PATH" in main
-    assert '"/spiffs/idiom_game_idle_exit_1.pcm"' in main
+    assert "APP_IDIOM_GAME_PROMPT_MAX_BYTES" not in main
+    assert "static esp_err_t app_play_idiom_cloud_prompt" in main
+    assert "cloud_client_build_idiom_prompt_audio_url" in cloud_header
+    assert "cloud_client_build_idiom_prompt_audio_url" in cloud_source
+    assert '"api/v5/realtime/idiom-game/prompts/%s/audio"' in cloud_source
     assert "cloud_client_idiom_game_idle_exit" in cloud_header
     assert "cloud_client_idiom_game_idle_exit" in cloud_source
     assert 'cJSON_AddStringToObject(root, "type", "idle_exit")' in cloud_source
@@ -387,9 +390,9 @@ def test_game_idle_deadline_sends_device_scoped_exit_and_restores_wake_flow() ->
     game_loop = main.split("static esp_err_t app_run_idiom_game_loop", 1)[1].split(
         "static esp_err_t run_trigger_pipeline", 1
     )[0]
-    assert 'app_play_retry_prompt("idiom_game_idle_exit"' in main
+    assert 'app_play_idiom_cloud_prompt("idle_exit"' in main
     assert "app_idiom_game_perform_idle_exit" in game_loop
-    assert 'app_play_retry_prompt("idiom_game_presence"' in game_loop
+    assert 'app_play_idiom_cloud_prompt("presence"' in game_loop
     assert "rescue_active" in game_loop
     assert "rescue_timeout_reason" in game_loop
     assert "no_meaningful_after_presence_prompt" in game_loop

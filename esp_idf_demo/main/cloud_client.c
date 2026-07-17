@@ -1937,6 +1937,29 @@ static esp_err_t cloud_opus_uplink_connect(cloud_opus_uplink_t **out_uplink,
     return ESP_OK;
 }
 
+esp_err_t cloud_client_build_idiom_prompt_audio_url(const char *prompt_id,
+                                                    char *out,
+                                                    size_t out_size)
+{
+    if (prompt_id == NULL || prompt_id[0] == '\0' || out == NULL || out_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strcmp(prompt_id, "presence") != 0 &&
+        strcmp(prompt_id, "misheard") != 0 &&
+        strcmp(prompt_id, "idle_exit") != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char path[160];
+    int written = snprintf(path,
+                           sizeof(path),
+                           "api/v5/realtime/idiom-game/prompts/%s/audio",
+                           prompt_id);
+    if (written < 0 || (size_t)written >= sizeof(path)) {
+        return ESP_ERR_NO_MEM;
+    }
+    return cloud_build_url(out, out_size, path);
+}
+
 esp_err_t cloud_client_opus_uplink_begin(cloud_opus_uplink_t **out_uplink,
                                          cloud_opus_uplink_metrics_t *metrics)
 {

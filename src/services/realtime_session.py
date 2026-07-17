@@ -10,15 +10,20 @@ from pathlib import Path
 from src.domain.coffee import COFFEE_RETRY_TEXT, answer_identity_question
 from src.providers.asr import transcribe_wav_result
 from src.providers.llm import stream_answer_text
-from src.providers.realtime_tts import (
-    PreparedRealtimeTtsSession,
-    RealtimeTtsError,
-    realtime_tts_health,
-    stream_realtime_tts_chunks,
-    warmup_realtime_tts_session,
+from src.providers.self_hosted_realtime_tts import (
+    PreparedSelfHostedRealtimeTtsSession as PreparedRealtimeTtsSession,
+    SelfHostedRealtimeTtsError as RealtimeTtsError,
+    self_hosted_realtime_tts_health as realtime_tts_health,
+    synthesize_self_hosted_audio as synthesize_audio,
+    stream_self_hosted_realtime_tts_chunks as stream_realtime_tts_chunks,
+    warmup_self_hosted_realtime_tts_session as warmup_realtime_tts_session,
 )
-from src.providers.static_audio import chunk_pcm_audio, merge_static_audio_paths, resolve_static_audio_plan
-from src.providers.tts import synthesize_audio
+from src.providers.static_audio import (
+    chunk_pcm_audio,
+    merge_idiom_static_audio_plan,
+    merge_static_audio_paths,
+    resolve_static_audio_plan,
+)
 from src.rag.retriever import is_coffee_question, retrieve_references
 from src.settings import settings
 from src.storage.realtime_store import InMemoryRealtimeSessionStore
@@ -285,17 +290,6 @@ def _split_stream_buffer(
     return ready_segments, remaining
 
 
-def _load_pcm_chunks(audio_path: str, chunk_size: int = 4096) -> list[bytes]:
-    path = Path(audio_path)
-    if path.suffix.lower() != ".wav":
-        raise ValueError("tts_unsupported_audio_format")
-    with wave.open(str(path), "rb") as reader:
-        frames = reader.readframes(reader.getnframes())
-    if not frames:
-        raise ValueError("tts_empty_audio")
-    return [frames[i : i + chunk_size] for i in range(0, len(frames), chunk_size)]
-
-
 def _stream_answer_audio(answer_segments: list[str], answer_text: str) -> Iterable[bytes]:
     if realtime_tts_health():
         yield from stream_realtime_tts_chunks(answer_segments or [answer_text])
@@ -304,10 +298,21 @@ def _stream_answer_audio(answer_segments: list[str], answer_text: str) -> Iterab
     for segment in answer_segments or [answer_text]:
         audio_path, tts_error = synthesize_audio(segment)
         if tts_error:
-            raise ValueError(tts_error)
+            raise RealtimeTtsError(tts_error, tts_error)
         if not audio_path:
-            raise ValueError("tts_empty_audio")
+            raise RealtimeTtsError("self_hosted_tts_empty_audio", "self_hosted_tts_empty_audio")
         yield from _load_pcm_chunks(audio_path)
+
+
+def _load_pcm_chunks(audio_path: str, chunk_size: int = 4096) -> list[bytes]:
+    path = Path(audio_path)
+    if path.suffix.lower() != ".wav":
+        raise RealtimeTtsError("tts_unsupported_audio_format", "tts_unsupported_audio_format")
+    with wave.open(str(path), "rb") as reader:
+        frames = reader.readframes(reader.getnframes())
+    if not frames:
+        raise RealtimeTtsError("tts_empty_audio", "tts_empty_audio")
+    return [frames[index : index + chunk_size] for index in range(0, len(frames), chunk_size)]
 
 
 def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: str) -> None:
@@ -401,9 +406,15 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
             store.fail_audio(session_id, "llm_empty_text")
             return
 
-        static_audio_paths = resolve_static_audio_plan(skill_result.audio_plan or []) if skill_result.audio_plan else None
+        resolved_audio_plan = list(skill_result.audio_plan or [])
+        static_audio_paths = (
+            resolve_static_audio_plan(resolved_audio_plan)
+            if resolved_audio_plan
+            else None
+        )
         if skill_result.skill_name == "idiom_game" and static_audio_paths is None:
-            static_audio_paths = resolve_static_audio_plan(["idiom_game/static_error"])
+            resolved_audio_plan = ["idiom_game/static_error"]
+            static_audio_paths = resolve_static_audio_plan(resolved_audio_plan)
             if static_audio_paths is None:
                 store.mark_failed(
                     session_id,
@@ -431,7 +442,13 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
         audio_max_chunk_gap_ms = 0
         try:
             if static_audio_paths is not None:
-                merged_static_audio = merge_static_audio_paths(static_audio_paths)
+                if skill_result.skill_name == "idiom_game":
+                    merged_static_audio = merge_idiom_static_audio_plan(
+                        resolved_audio_plan,
+                        static_audio_paths,
+                    )
+                else:
+                    merged_static_audio = merge_static_audio_paths(static_audio_paths)
                 updated["trace"]["static_audio_merge_mode"] = "merged_pcm"
                 updated["trace"]["static_audio_merged_bytes"] = len(merged_static_audio)
                 audio_stream = chunk_pcm_audio(merged_static_audio)

@@ -271,7 +271,7 @@ def build_idiom_audio_plan(answer_text: str, trace: dict | None = None) -> list[
     if result == "user_win_target_turns":
         return ["idiom_game/challenge_win"]
     if event == "start" and robot_word:
-        return ["idiom_game/start", "idiom_game/robot_first", f"idioms/{robot_word}"]
+        return ["idiom_game/start", f"idioms/{robot_word}"]
     if event in {"robot_reply", "repeat"} and robot_word:
         return [f"idioms/{robot_word}"]
     if event == "difficulty_switch":
@@ -292,7 +292,6 @@ def build_idiom_audio_plan(answer_text: str, trace: dict | None = None) -> list[
     if start_match:
         return [
             "idiom_game/start",
-            "idiom_game/robot_first",
             f"idioms/{start_match.group('word')}",
         ]
 

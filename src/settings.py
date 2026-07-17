@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3.5-flash-2026-02-23"
     llm_temperature: float = 0.2
     llm_max_tokens: int = 256
-    asr_provider: str = "volcengine"
+    asr_provider: str = "dashscope"
     asr_fallback_provider: str = "dashscope"
     asr_provider_override_device_ids: str = ""
     asr_provider_override_provider: str = ""
@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     tts_voice: str = ""
     realtime_tts_model: str = "qwen3-tts-flash-realtime-2025-11-27"
     realtime_tts_voice: str = ""
+    realtime_tts_provider: str = "self_hosted"
+    self_hosted_tts_ws_url: str = "ws://127.0.0.1:18122/tts/realtime"
+    self_hosted_tts_health_url: str = "http://127.0.0.1:18122/health"
+    self_hosted_tts_model: str = "qwen3-tts-base-1_7b"
+    self_hosted_tts_voice: str = "clone_coffee_20s_v1"
+    self_hosted_tts_post_roll_ms: int = 500
+    self_hosted_tts_fixed_tempo: float = 0.9
     tts_language_type: str = "Chinese"
     tts_instructions: str = "请使用明亮、亲切、有一点活泼感的中文声音，语速自然，适合咖啡小问答播报。"
     tts_timeout_seconds: int = 20

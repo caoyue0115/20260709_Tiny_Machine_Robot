@@ -615,6 +615,38 @@ class RealtimeSchemaTests(unittest.TestCase):
         self.assertEqual(response.headers["X-Audio-Endian"], "little")
         self.assertEqual(packets, [(0, b"ab")])
 
+    def test_get_idiom_prompt_audio_streams_static_pcm_with_realtime_headers(self) -> None:
+        from src.api import realtime as realtime_api
+
+        with mock.patch.object(
+            realtime_api,
+            "validate_fixed_audio_tail",
+            return_value=Path("/tmp/idiom_game_retry.wav"),
+        ) as validate, mock.patch.object(
+            realtime_api,
+            "read_static_audio_pcm",
+            return_value=b"abcd",
+        ):
+            response = realtime_api.get_idiom_prompt_audio("misheard")
+
+        packets = _parse_framed_packets(b"".join(response.body_iterator))
+        validate.assert_called_once_with("idiom_game/retry")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.media_type, "application/octet-stream")
+        self.assertEqual(response.headers["X-Audio-Format"], "pcm")
+        self.assertEqual(response.headers["X-Audio-Packetization"], "framed-v1")
+        self.assertEqual(response.headers["X-Audio-Sample-Rate"], "16000")
+        self.assertEqual(packets, [(0, b"abcd")])
+
+    def test_get_idiom_prompt_audio_rejects_unknown_prompt(self) -> None:
+        from src.api import realtime as realtime_api
+
+        with self.assertRaises(HTTPException) as exc:
+            realtime_api.get_idiom_prompt_audio("unknown")
+
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail, "idiom_prompt_not_found")
+
     def test_get_realtime_audio_returns_opus_when_requested_and_enabled(self) -> None:
         from src.api import realtime as realtime_api
 

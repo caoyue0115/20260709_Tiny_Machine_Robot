@@ -32,6 +32,12 @@ from src.providers.realtime_asr import (
     RealtimeAsrResult,
     create_realtime_asr_session,
 )
+from src.providers.static_audio import (
+    StaticAudioError,
+    chunk_pcm_audio,
+    read_static_audio_pcm,
+    validate_fixed_audio_tail,
+)
 from src.services.realtime_session import (
     normalize_coffee_asr_text,
     start_realtime_session,
@@ -75,6 +81,11 @@ def _make_board_done_payload(payload: dict[str, Any]) -> dict[str, Any]:
 ASR_FALLBACK_NONE = "none"
 ASR_FALLBACK_CHOICES = ASR_PROVIDER_CHOICES | {ASR_FALLBACK_NONE, ""}
 IDIOM_TURN_OUTCOMES = {"meaningful", "invalid", "off_topic", "exit"}
+IDIOM_PROMPT_SEGMENTS = {
+    "presence": "idiom_game/presence",
+    "misheard": "idiom_game/retry",
+    "idle_exit": "idiom_game/idle_exit",
+}
 
 
 async def _run_asr_blocking_call(func, /, *args):
@@ -1380,6 +1391,31 @@ def get_realtime_session(session_id: str) -> RealtimeSessionStatusResponse:
     if not session:
         raise HTTPException(status_code=404, detail="session_not_found")
     return RealtimeSessionStatusResponse(**session)
+
+
+@router.get("/api/v5/realtime/idiom-game/prompts/{prompt_id}/audio")
+def get_idiom_prompt_audio(prompt_id: str):
+    segment_id = IDIOM_PROMPT_SEGMENTS.get(str(prompt_id or "").strip())
+    if segment_id is None:
+        raise HTTPException(status_code=404, detail="idiom_prompt_not_found")
+    try:
+        path = validate_fixed_audio_tail(segment_id)
+        pcm = read_static_audio_pcm(path)
+    except StaticAudioError as exc:
+        raise HTTPException(status_code=503, detail="idiom_prompt_unavailable") from exc
+    return StreamingResponse(
+        _frame_audio_packets(chunk_pcm_audio(pcm)),
+        media_type="application/octet-stream",
+        headers={
+            "X-Audio-Format": "pcm",
+            "X-Audio-Packetization": "framed-v1",
+            "X-Audio-Sample-Rate": str(settings.realtime_audio_sample_rate),
+            "X-Audio-Sample-Width": str(settings.realtime_audio_sample_width_bits),
+            "X-Audio-Channels": str(settings.realtime_audio_channels),
+            "X-Audio-Endian": settings.realtime_audio_endian,
+        },
+        status_code=200,
+    )
 
 
 @router.get("/api/v3/realtime/sessions/{session_id}/audio")

@@ -652,9 +652,6 @@ static esp_err_t app_validate_runtime_config(void)
 #define APP_IDIOM_GAME_BASE_ATTEMPT_MS 15000
 #define APP_IDIOM_GAME_RESCUE_BONUS_MS 10000
 #define APP_IDIOM_GAME_IDLE_EXIT_ACK_TIMEOUT_MS 2000
-#define APP_IDIOM_GAME_PRESENCE_PROMPT_PATH "/spiffs/idiom_game_presence_1.pcm"
-#define APP_IDIOM_GAME_MISHEARD_PROMPT_PATH "/spiffs/idiom_game_misheard_1.pcm"
-#define APP_IDIOM_GAME_IDLE_EXIT_PROMPT_PATH "/spiffs/idiom_game_idle_exit_1.pcm"
 
 typedef enum {
     APP_IDIOM_GAME_SOCKET_IDLE = 0,
@@ -765,6 +762,26 @@ static esp_err_t app_play_idiom_game_audio(const char *audio_stream_url)
     esp_err_t close_ret = audio_out_close_pcm_stream();
     if (ret == ESP_OK) {
         ret = close_ret;
+    }
+    return ret;
+}
+
+static esp_err_t app_play_idiom_cloud_prompt(const char *prompt_id)
+{
+    char audio_stream_url[DEMO_CLOUD_AUDIO_URL_MAX_LEN] = {0};
+    esp_err_t ret = cloud_client_build_idiom_prompt_audio_url(
+        prompt_id,
+        audio_stream_url,
+        sizeof(audio_stream_url));
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = app_play_idiom_game_audio(audio_stream_url);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "idiom_cloud_prompt_failed prompt_id=%s err=%s",
+                 prompt_id,
+                 esp_err_to_name(ret));
     }
     return ret;
 }
@@ -890,8 +907,7 @@ static esp_err_t app_idiom_game_perform_idle_exit(
 
     app_idiom_game_set_state(game_state, APP_IDIOM_GAME_PLAYBACK);
     app_set_state(state, APP_STATE_PLAYING);
-    app_play_retry_prompt("idiom_game_idle_exit",
-                          APP_IDIOM_GAME_IDLE_EXIT_PROMPT_PATH);
+    (void)app_play_idiom_cloud_prompt("idle_exit");
 
     char event_id[64];
     snprintf(event_id,
@@ -936,8 +952,7 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
             if (!rescue_active) {
                 app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
                 app_set_state(state, APP_STATE_PLAYING);
-                app_play_retry_prompt("idiom_game_presence",
-                                      APP_IDIOM_GAME_PRESENCE_PROMPT_PATH);
+                (void)app_play_idiom_cloud_prompt("presence");
                 app_idiom_game_grant_rescue_bonus(
                     &remaining_attempt_budget_us,
                     &rescue_active,
@@ -1105,8 +1120,7 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
                     }
                     app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
                     app_set_state(state, APP_STATE_PLAYING);
-                    app_play_retry_prompt("idiom_game_misheard",
-                                          APP_IDIOM_GAME_MISHEARD_PROMPT_PATH);
+                    (void)app_play_idiom_cloud_prompt("misheard");
                     needs_echo_guard = true;
                     ESP_LOGI(TAG,
                              "idiom_game_turn_recoverable turn_id=%s error_code=%s "
@@ -1219,8 +1233,7 @@ static esp_err_t app_run_idiom_game_loop(app_state_t *state)
                     }
                     app_idiom_game_set_state(&game_state, APP_IDIOM_GAME_PLAYBACK);
                     app_set_state(state, APP_STATE_PLAYING);
-                    app_play_retry_prompt("idiom_game_misheard",
-                                          APP_IDIOM_GAME_MISHEARD_PROMPT_PATH);
+                    (void)app_play_idiom_cloud_prompt("misheard");
                     needs_echo_guard = true;
                 } else {
                     ESP_LOGW(TAG,

@@ -50,14 +50,14 @@ class RunPipelineTests(unittest.TestCase):
         ) as transcribe_wav_result, mock.patch.object(
             pipeline, "retrieve_references", return_value=([], 0.0)
         ), mock.patch.object(
-            pipeline, "synthesize_audio", return_value=(None, "tts_skipped")
-        ) as synthesize_audio, mock.patch.object(
+            pipeline, "synthesize_self_hosted_audio", return_value=(None, "tts_skipped")
+        ) as synthesize_self_hosted_audio, mock.patch.object(
             pipeline, "mark_task_done"
         ) as mark_task_done:
             pipeline.run_pipeline("task-1")
 
         transcribe_wav_result.assert_called_once_with(self.row["input_wav_path"])
-        synthesize_audio.assert_called_once_with("我还没听清，可以再问我一个咖啡问题吗？")
+        synthesize_self_hosted_audio.assert_called_once_with("我还没听清，可以再问我一个咖啡问题吗？")
         mark_task_done.assert_called_once()
         kwargs = mark_task_done.call_args.kwargs
         self.assertEqual(kwargs["question_text"], "今天天气怎么样")

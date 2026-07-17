@@ -4,6 +4,7 @@ import wave
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+from src.providers.pcm_tail import PCM_POST_ROLL_MS, analyze_pcm16_tail, pcm16_silence
 from src.settings import settings
 
 
@@ -59,6 +60,18 @@ def resolve_static_audio_plan(segment_ids: Iterable[str], root: Path | None = No
     return paths or None
 
 
+def read_static_audio_pcm(path: Path) -> bytes:
+    return _read_audio_file(path)
+
+
+def validate_fixed_audio_tail(segment_id: str, root: Path | None = None) -> Path:
+    path = validate_static_audio_segment(segment_id, root=root)
+    report = analyze_pcm16_tail(read_static_audio_pcm(path))
+    if not report.safe_tail:
+        raise StaticAudioError(f"static_audio_unsafe_tail:{segment_id}")
+    return path
+
+
 def stream_static_audio_paths(paths: Iterable[Path], chunk_size: int | None = None) -> Iterator[bytes]:
     size = max(1, int(chunk_size or settings.static_audio_chunk_size))
     for path in paths:
@@ -69,6 +82,28 @@ def merge_static_audio_paths(paths: Iterable[Path]) -> bytes:
     merged = bytearray()
     for path in paths:
         merged.extend(_read_audio_file(path))
+    return bytes(merged)
+
+
+def merge_idiom_static_audio_plan(
+    segment_ids: Iterable[str],
+    paths: Iterable[Path],
+) -> bytes:
+    ids = [str(item) for item in segment_ids]
+    resolved = list(paths)
+    if len(ids) != len(resolved):
+        raise StaticAudioError("static_audio_plan_length_mismatch")
+
+    merged = bytearray()
+    for segment_id, path in zip(ids, resolved, strict=True):
+        pcm = read_static_audio_pcm(path)
+        if segment_id.startswith("idiom_game/"):
+            report = analyze_pcm16_tail(pcm)
+            if not report.safe_tail:
+                raise StaticAudioError(f"static_audio_unsafe_tail:{segment_id}")
+        merged.extend(pcm)
+    if ids and ids[-1].startswith("idioms/"):
+        merged.extend(pcm16_silence(PCM_POST_ROLL_MS))
     return bytes(merged)
 
 

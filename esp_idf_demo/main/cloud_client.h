@@ -213,6 +213,10 @@ esp_err_t cloud_client_stream_realtime_audio(const char *audio_stream_url,
                                              void *user_ctx,
                                              cloud_realtime_audio_metrics_t *metrics);
 
+esp_err_t cloud_client_build_idiom_prompt_audio_url(const char *prompt_id,
+                                                    char *out,
+                                                    size_t out_size);
+
 esp_err_t cloud_client_fetch_ota_manifest(const char *board,
                                           const char *hw_rev,
                                           const char *app_version,

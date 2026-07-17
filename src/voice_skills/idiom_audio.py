@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from src.providers.static_audio import StaticAudioError, validate_static_audio_segment
+from src.providers.static_audio import (
+    StaticAudioError,
+    validate_fixed_audio_tail,
+    validate_static_audio_segment,
+)
 from src.voice_skills.idiom_game import IdiomEntry, load_default_idioms
 
 
@@ -12,6 +16,8 @@ STATIC_ERROR_SEGMENT = "idiom_game/static_error"
 REQUIRED_FIXED_SEGMENTS = frozenset(
     {
         "idiom_game/start",
+        "idiom_game/presence",
+        "idiom_game/idle_exit",
         "idiom_game/robot_first",
         "idiom_game/need_prefix",
         "idiom_game/need_suffix",
@@ -28,6 +34,25 @@ REQUIRED_FIXED_SEGMENTS = frozenset(
         "idiom_game/challenge_win",
         "idiom_game/continue_prompt",
         "idiom_game/retry",
+        STATIC_ERROR_SEGMENT,
+    }
+)
+
+TAIL_VALIDATED_FIXED_SEGMENTS = frozenset(
+    {
+        "idiom_game/start",
+        "idiom_game/presence",
+        "idiom_game/idle_exit",
+        "idiom_game/robot_no_reply_user_win",
+        "idiom_game/challenge_win",
+        "idiom_game/mode_easy",
+        "idiom_game/mode_normal",
+        "idiom_game/mode_hard",
+        "idiom_game/mode_full",
+        "idiom_game/exit",
+        "idiom_game/continue_prompt",
+        "idiom_game/retry",
+        "idiom_game/not_found",
         STATIC_ERROR_SEGMENT,
     }
 )
@@ -56,11 +81,14 @@ _catalog: IdiomAudioCatalog | None = None
 def build_idiom_audio_catalog(
     idioms: Iterable[IdiomEntry], root: Path | None = None
 ) -> IdiomAudioCatalog:
-    validate_static_audio_segment(STATIC_ERROR_SEGMENT, root=root)
+    validate_fixed_audio_tail(STATIC_ERROR_SEGMENT, root=root)
     invalid_fixed: set[str] = set()
     for segment_id in REQUIRED_FIXED_SEGMENTS - {STATIC_ERROR_SEGMENT}:
         try:
-            validate_static_audio_segment(segment_id, root=root)
+            if segment_id in TAIL_VALIDATED_FIXED_SEGMENTS:
+                validate_fixed_audio_tail(segment_id, root=root)
+            else:
+                validate_static_audio_segment(segment_id, root=root)
         except StaticAudioError:
             invalid_fixed.add(segment_id)
 

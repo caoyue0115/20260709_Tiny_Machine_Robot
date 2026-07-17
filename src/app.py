@@ -11,7 +11,7 @@ from src.api.tasks import router as tasks_router
 from src.models.schema import HealthzResponse
 from src.providers.asr import asr_health
 from src.providers.llm import llm_health
-from src.providers.tts import tts_health
+from src.providers.self_hosted_realtime_tts import self_hosted_realtime_tts_health
 from src.settings import settings
 from src.storage.db import init_db, sqlite_ok
 from src.voice_skills.idiom_audio import initialize_idiom_audio_catalog
@@ -49,5 +49,5 @@ def healthz() -> HealthzResponse:
         sqlite="ok" if sqlite_ok() else "down",
         asr="ok" if asr_health() else "down",
         llm="ok" if llm_health() else "down",
-        tts="ok" if tts_health() else "down",
+        tts="ok" if self_hosted_realtime_tts_health() else "down",
     )

@@ -68,7 +68,10 @@ class VoiceSkillRouterTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.skill_name, "idiom_game")
         self.assertIn("小机仔先来", result.answer_text or "")
-        self.assertEqual(len(result.audio_plan or []), 3)
+        self.assertEqual(
+            result.audio_plan,
+            ["idiom_game/start", f"idioms/{result.trace['idiom_robot_reply_word']}"],
+        )
         self.assertEqual(result.turn_outcome, "meaningful")
 
     def test_start_reply_and_audio_plan_stop_after_opening_idiom(self) -> None:
@@ -81,7 +84,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
         self.assertEqual(result.answer_text, "好呀，我们玩成语接龙。小机仔先来：画龙点睛。")
         self.assertEqual(
             result.audio_plan,
-            ["idiom_game/start", "idiom_game/robot_first", "idioms/画龙点睛"],
+            ["idiom_game/start", "idioms/画龙点睛"],
         )
         state = store.get("esp-1")
         self.assertIsNotNone(state)
@@ -110,7 +113,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
         self.assertEqual(result.answer_text, "好呀，我们玩成语接龙。小机仔先来：画龙点睛。")
         self.assertEqual(
             result.audio_plan,
-            ["idiom_game/start", "idiom_game/robot_first", "idioms/画龙点睛"],
+            ["idiom_game/start", "idioms/画龙点睛"],
         )
         state = store.get("esp-1")
         assert state is not None
@@ -543,8 +546,8 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
         self.assertEqual(updated["trace"]["static_audio_used"], True)
         self.assertEqual(updated["trace"]["static_audio_segment_count"], len(audio_plan))
         self.assertEqual(
-            list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
-            [b"\x01\x00\x02\x00"],
+            b"".join(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
+            b"\x01\x00\x02\x00" + (b"\x00\x00" * (500 * 16)),
         )
         stream_realtime_tts_chunks.assert_not_called()
 
@@ -555,7 +558,8 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write_wav(root / "idiom_game" / "static_error.wav", pcm=b"\x05\x00\x06\x00")
+            static_error_pcm = b"\x05\x00\x06\x00" + (b"\x00\x00" * (500 * 16))
+            _write_wav(root / "idiom_game" / "static_error.wav", pcm=static_error_pcm)
             store = InMemoryRealtimeSessionStore(base_url="http://testserver")
             session = store.create_session(device_id="esp-1")
             store.update_session(session["session_id"], question_text="不存在的成语素材")
@@ -587,8 +591,8 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
         self.assertEqual(updated["status"], "done")
         self.assertEqual(updated["trace"]["static_audio_used"], True)
         self.assertEqual(
-            list(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
-            [b"\x05\x00\x06\x00"],
+            b"".join(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
+            static_error_pcm,
         )
 
     def test_static_audio_paths_are_merged_before_session_audio_queue(self) -> None:
@@ -601,6 +605,70 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
             _write_wav(second, pcm=b"\x03\x00\x04\x00")
 
             self.assertEqual(merge_static_audio_paths([first, second]), b"\x01\x00\x02\x00\x03\x00\x04\x00")
+
+    def test_idiom_static_audio_merge_keeps_fixed_tail_and_appends_one_idiom_post_roll(self) -> None:
+        from src.providers import static_audio as static_audio_module
+        from src.providers.pcm_tail import analyze_pcm16_tail
+
+        fixed_pcm = b"\x01\x00\x02\x00" + (b"\x00\x00" * (500 * 16))
+        idiom_pcm = b"\x21\x43\x65\x07"
+        idiom_post_roll = b"\x00\x00" * (500 * 16)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixed = root / "idiom_game" / "start.wav"
+            idiom = root / "idioms" / "画龙点睛.wav"
+            _write_wav(fixed, pcm=fixed_pcm)
+            _write_wav(idiom, pcm=idiom_pcm)
+
+            with mock.patch.object(
+                static_audio_module,
+                "analyze_pcm16_tail",
+                wraps=analyze_pcm16_tail,
+            ) as analyze_tail:
+                merged = static_audio_module.merge_idiom_static_audio_plan(
+                    ["idiom_game/start", "idioms/画龙点睛"],
+                    [fixed, idiom],
+                )
+
+        self.assertEqual(merged, fixed_pcm + idiom_pcm + idiom_post_roll)
+        self.assertEqual(merged[len(fixed_pcm) - 16000 : len(fixed_pcm)], b"\x00" * 16000)
+        self.assertEqual(merged[len(fixed_pcm) : len(fixed_pcm) + len(idiom_pcm)], idiom_pcm)
+        self.assertEqual(merged[-16000:], b"\x00" * 16000)
+        analyze_tail.assert_called_once_with(fixed_pcm)
+
+    def test_idiom_static_audio_merge_does_not_add_post_roll_after_fixed_only_plan(self) -> None:
+        from src.providers.static_audio import merge_idiom_static_audio_plan
+
+        fixed_pcm = b"\x01\x00\x02\x00" + (b"\x00\x00" * (500 * 16))
+        with tempfile.TemporaryDirectory() as tmp:
+            fixed = Path(tmp) / "idiom_game" / "retry.wav"
+            _write_wav(fixed, pcm=fixed_pcm)
+
+            merged = merge_idiom_static_audio_plan(
+                ["idiom_game/retry"],
+                [fixed],
+            )
+
+        self.assertEqual(merged, fixed_pcm)
+
+    def test_idiom_static_audio_merge_rejects_unsafe_fixed_boundary(self) -> None:
+        from src.providers.static_audio import StaticAudioError, merge_idiom_static_audio_plan
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixed = root / "idiom_game" / "start.wav"
+            idiom = root / "idioms" / "画龙点睛.wav"
+            _write_wav(fixed, pcm=b"\xb0\x04" * 320)
+            _write_wav(idiom, pcm=b"\x21\x43\x65\x07")
+
+            with self.assertRaisesRegex(
+                StaticAudioError,
+                "static_audio_unsafe_tail:idiom_game/start",
+            ):
+                merge_idiom_static_audio_plan(
+                    ["idiom_game/start", "idioms/画龙点睛"],
+                    [fixed, idiom],
+                )
 
     def test_static_audio_chunk_size_default_is_large_enough_for_board_streaming(self) -> None:
         from src.settings import Settings

@@ -21,7 +21,7 @@ class HealthzTests(unittest.TestCase):
         with mock.patch.object(app_module, "sqlite_ok", return_value=True), mock.patch.object(
             app_module, "asr_health", return_value=True
         ), mock.patch.object(app_module, "llm_health", return_value=True), mock.patch.object(
-            app_module, "tts_health", return_value=False
+            app_module, "self_hosted_realtime_tts_health", return_value=False
         ), mock.patch("src.app.Redis.from_url") as redis_from_url:
             redis_from_url.return_value.ping.return_value = True
             response = app_module.healthz()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import shutil
@@ -11,9 +10,6 @@ import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, NamedTuple
-from urllib.parse import urlparse
-
-import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -46,21 +42,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised by subprocess
     _DOTENV_VALUES = _read_dotenv_values(Path(os.getenv("IDIOM_STATIC_AUDIO_ENV_FILE", ROOT / ".env")))
 
     class _FallbackSettings:
-        dashscope_api_key = _env_value("DASHSCOPE_API_KEY", "")
-        dashscope_base_url = _env_value("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com")
-        dashscope_tts_model = _env_value("DASHSCOPE_TTS_MODEL", "qwen3-tts-vc-2026-01-22")
-        tts_voice = _env_value("TTS_VOICE", "")
-        realtime_tts_model = _env_value("REALTIME_TTS_MODEL", "qwen3-tts-flash-realtime-2025-11-27")
-        realtime_tts_voice = _env_value("REALTIME_TTS_VOICE", "")
-        tts_language_type = _env_value("TTS_LANGUAGE_TYPE", "Chinese")
-        tts_instructions = _env_value(
-            "TTS_INSTRUCTIONS",
-            "请使用明亮、亲切、有一点活泼感的中文声音，语速自然，适合成语接龙播报。",
-        )
-        tts_timeout_seconds = int(_env_value("TTS_TIMEOUT_SECONDS", "20"))
-        realtime_audio_sample_rate = int(_env_value("REALTIME_AUDIO_SAMPLE_RATE", "16000"))
-        realtime_audio_sample_width_bits = int(_env_value("REALTIME_AUDIO_SAMPLE_WIDTH_BITS", "16"))
-        realtime_audio_channels = int(_env_value("REALTIME_AUDIO_CHANNELS", "1"))
+        self_hosted_tts_model = _env_value("SELF_HOSTED_TTS_MODEL", "qwen3-tts-base-1_7b")
+        self_hosted_tts_voice = _env_value("SELF_HOSTED_TTS_VOICE", "clone_coffee_20s_v1")
+        self_hosted_tts_fixed_tempo = float(_env_value("SELF_HOSTED_TTS_FIXED_TEMPO", "0.9"))
+        self_hosted_tts_post_roll_ms = int(_env_value("SELF_HOSTED_TTS_POST_ROLL_MS", "500"))
 
         @property
         def static_audio_path(self) -> Path:
@@ -71,17 +56,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised by subprocess
 
     settings = _FallbackSettings()
 
-try:
-    from src.providers.realtime_tts import stream_realtime_tts_chunks
-except Exception:  # pragma: no cover - depends on optional realtime SDK availability
-    stream_realtime_tts_chunks = None
-
-
-DEFAULT_PRICE_USD_PER_10K_CHARS = 0.114682
+DEFAULT_PRICE_USD_PER_10K_CHARS = 0.0
 DEFAULT_AUDIO_SUFFIX = ".wav"
 
 PHRASE_SEGMENTS: tuple[tuple[str, str], ...] = (
-    ("idiom_game/start", "好呀，我们玩成语接龙。"),
+    ("idiom_game/start", "好呀，我们玩成语接龙。小机仔先来："),
+    ("idiom_game/presence", "你还在吗？"),
+    ("idiom_game/idle_exit", "那我们下次再玩吧。"),
     ("idiom_game/robot_first", "小机仔先来"),
     ("idiom_game/robot_reply", "小机仔接"),
     ("idiom_game/turn_prompt", "轮到你啦，要接"),
@@ -144,7 +125,7 @@ def prebuild_static_audio(
     dry_run: bool = False,
     overwrite: bool = False,
     run_id: str | None = None,
-    backend: str = "http",
+    backend: str = "self_hosted",
     price_usd_per_10k_chars: float | None = None,
     effective_price_usd_per_10k_chars: float | None = None,
     free_tier: bool = False,
@@ -189,14 +170,14 @@ def prebuild_static_audio(
         "output_root": str(output_root),
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
-        "provider": "dashscope",
+        "provider": "self_hosted",
         "backend": backend,
         "model": model,
         "voice": voice,
         "pricing_mode": "free_tier" if free_tier else "formula_effective_price",
         "formula_list_price_usd_per_10k_chars": list_price,
         "formula_effective_price_usd_per_10k_chars": effective_price,
-        "cost_data_source": "local_formula_estimate_not_cloud_bill",
+        "cost_data_source": "self_hosted_no_external_tts_bill",
         "planned_count": len(specs),
         "generated_count": 0,
         "skipped_count": 0,
@@ -291,104 +272,13 @@ def prebuild_static_audio(
     return summary
 
 
-def synthesize_dashscope_wav(text: str, output_path: Path, context: dict) -> dict:
-    api_key = settings.dashscope_api_key
-    model = str(context.get("model") or settings.dashscope_tts_model)
-    voice = str(context.get("voice") or settings.tts_voice)
-    if not api_key:
-        raise RuntimeError("missing DASHSCOPE_API_KEY")
-    if not voice:
-        raise RuntimeError("missing TTS_VOICE")
+def synthesize_self_hosted_wav(text: str, output_path: Path, context: dict) -> dict:
+    from scripts.prepare_idiom_fixed_audio import synthesize_self_hosted_wav as render
 
-    payload = {
-        "model": model,
-        "input": {
-            "text": text,
-            "voice": voice,
-            "language_type": settings.tts_language_type,
-        },
-        "parameters": {
-            "instructions": settings.tts_instructions,
-            "output_format": "wav",
-        },
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    api_url = settings.dashscope_base_url.rstrip("/") + "/api/v1/services/aigc/multimodal-generation/generation"
-    response = requests.post(api_url, headers=headers, json=payload, timeout=settings.tts_timeout_seconds)
-    try:
-        body = response.json()
-    except Exception as exc:
-        raise RuntimeError("dashscope_invalid_json") from exc
-    if response.status_code != 200:
-        raise RuntimeError(f"dashscope_http_{response.status_code}:{body}")
-
-    output_audio = (body.get("output") or {}).get("audio", {})
-    audio_url = output_audio.get("url")
-    audio_base64 = output_audio.get("data")
-    audio_bytes = _load_dashscope_audio_bytes(audio_url=audio_url, audio_base64=audio_base64)
-    tmp_path = output_path.with_suffix(f".tmp{output_path.suffix}")
-    tmp_path.write_bytes(audio_bytes)
-    if tmp_path.stat().st_size <= 0:
-        tmp_path.unlink(missing_ok=True)
-        raise RuntimeError("empty_audio")
-    tmp_path.replace(output_path)
-    return {
-        "backend": "http",
-        "provider_request_id": body.get("request_id"),
-        "dashscope_audio_url": audio_url,
-    }
-
-
-def synthesize_realtime_wav(text: str, output_path: Path, context: dict) -> dict:
-    if stream_realtime_tts_chunks is None:
-        raise RuntimeError("realtime_tts_unavailable")
-    model = str(context.get("model") or getattr(settings, "realtime_tts_model", ""))
-    voice = str(context.get("voice") or getattr(settings, "realtime_tts_voice", ""))
-    if not model:
-        raise RuntimeError("missing REALTIME_TTS_MODEL")
-    if not voice:
-        raise RuntimeError("missing REALTIME_TTS_VOICE")
-
-    old_model = getattr(settings, "realtime_tts_model", None)
-    old_voice = getattr(settings, "realtime_tts_voice", None)
-    if hasattr(settings, "realtime_tts_model"):
-        setattr(settings, "realtime_tts_model", model)
-    if hasattr(settings, "realtime_tts_voice"):
-        setattr(settings, "realtime_tts_voice", voice)
-
-    sample_rate = int(getattr(settings, "realtime_audio_sample_rate", 16000))
-    sample_width_bits = int(getattr(settings, "realtime_audio_sample_width_bits", 16))
-    channels = int(getattr(settings, "realtime_audio_channels", 1))
-    sample_width_bytes = max(1, sample_width_bits // 8)
-    tmp_path = output_path.with_suffix(f".tmp{output_path.suffix}")
-    audio_bytes = 0
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(tmp_path), "wb") as writer:
-            writer.setnchannels(channels)
-            writer.setsampwidth(sample_width_bytes)
-            writer.setframerate(sample_rate)
-            for chunk in stream_realtime_tts_chunks([text]):
-                if chunk:
-                    writer.writeframes(chunk)
-                    audio_bytes += len(chunk)
-        if audio_bytes <= 0 or tmp_path.stat().st_size <= 0:
-            tmp_path.unlink(missing_ok=True)
-            raise RuntimeError("empty_realtime_audio")
-        tmp_path.replace(output_path)
-    finally:
-        if old_model is not None and hasattr(settings, "realtime_tts_model"):
-            setattr(settings, "realtime_tts_model", old_model)
-        if old_voice is not None and hasattr(settings, "realtime_tts_voice"):
-            setattr(settings, "realtime_tts_voice", old_voice)
-    return {
-        "backend": "realtime",
-        "audio_format": "wav_from_pcm",
-        "pcm_bytes": audio_bytes,
-    }
+    render_context = dict(context)
+    render_context.setdefault("tempo_factor", float(settings.self_hosted_tts_fixed_tempo))
+    render_context.setdefault("tail_ms", int(settings.self_hosted_tts_post_roll_ms))
+    return render(text, output_path, render_context)
 
 
 def _load_idiom_rows(path: Path) -> list[dict[str, str]]:
@@ -432,7 +322,7 @@ def _base_manifest_entry(
         "category": spec.category,
         "text": spec.text,
         "char_count": char_count,
-        "provider": "dashscope",
+        "provider": "self_hosted",
         "backend": backend,
         "model": model,
         "voice": voice,
@@ -452,38 +342,25 @@ def estimate_cost_usd(char_count: int, price_usd_per_10k_chars: float) -> float:
 
 
 def normalize_backend(value: str) -> str:
-    backend = str(value or "http").strip().lower()
-    if backend not in {"http", "realtime"}:
+    backend = str(value or "self_hosted").strip().lower()
+    if backend != "self_hosted":
         raise ValueError(f"unsupported_tts_backend:{value}")
     return backend
 
 
 def _default_model_for_backend(backend: str) -> str:
-    if backend == "realtime":
-        return str(getattr(settings, "realtime_tts_model", "") or "")
-    return str(getattr(settings, "dashscope_tts_model", "") or "")
+    return str(getattr(settings, "self_hosted_tts_model", "") or "")
 
 
 def _default_voice_for_backend(backend: str) -> str:
-    if backend == "realtime":
-        return str(getattr(settings, "realtime_tts_voice", "") or "")
-    return str(getattr(settings, "tts_voice", "") or "")
+    return str(getattr(settings, "self_hosted_tts_voice", "") or "")
 
 
 def _default_synthesizer_for_backend(backend: str) -> Synthesizer:
-    return synthesize_realtime_wav if backend == "realtime" else synthesize_dashscope_wav
+    return synthesize_self_hosted_wav
 
 
 def default_formula_price_usd_per_10k_chars(model: str) -> float:
-    normalized = str(model or "").strip().lower()
-    if "realtime" in normalized:
-        return 0.143353
-    if "instruct-flash" in normalized:
-        return 0.115
-    if "-vc" in normalized or normalized.endswith("vc"):
-        return 0.115
-    if "flash" in normalized:
-        return 0.114682
     return DEFAULT_PRICE_USD_PER_10K_CHARS
 
 
@@ -512,24 +389,6 @@ def audio_duration_ms(path: Path) -> int | None:
         except Exception:
             return None
     return None
-
-
-def _load_dashscope_audio_bytes(*, audio_url: str | None, audio_base64: str | None) -> bytes:
-    if audio_url:
-        parsed = urlparse(audio_url)
-        suffix = Path(parsed.path).suffix.lower()
-        if suffix and suffix != ".wav":
-            raise RuntimeError(f"unsupported_audio_suffix:{suffix}")
-        response = requests.get(audio_url, timeout=settings.tts_timeout_seconds)
-        if response.status_code != 200 or not response.content:
-            raise RuntimeError(f"audio_download_failed_{response.status_code}")
-        return response.content
-    if audio_base64:
-        try:
-            return base64.b64decode(audio_base64)
-        except Exception as exc:
-            raise RuntimeError("audio_base64_decode_failed") from exc
-    raise RuntimeError("dashscope_missing_audio")
 
 
 def _elapsed_ms(started: float) -> int:
@@ -566,7 +425,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--run-id")
-    parser.add_argument("--backend", default="http", choices=["http", "realtime"])
+    parser.add_argument("--backend", default="self_hosted", choices=["self_hosted"])
     parser.add_argument("--price-usd-per-10k-chars", type=float)
     parser.add_argument("--effective-price-usd-per-10k-chars", type=float)
     parser.add_argument("--free-tier", action="store_true")

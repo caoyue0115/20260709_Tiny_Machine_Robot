@@ -8,7 +8,7 @@ from rq import Queue
 from src.domain.coffee import COFFEE_RETRY_TEXT
 from src.providers.asr import ASRResult, transcribe_wav_result
 from src.providers.llm import generate_answer
-from src.providers.tts import synthesize_audio
+from src.providers.self_hosted_realtime_tts import synthesize_self_hosted_audio
 from src.rag.retriever import is_coffee_question, retrieve_references
 from src.settings import settings
 from src.storage.db import fetch_task, mark_task_done, mark_task_failed, update_task_status
@@ -61,7 +61,7 @@ def run_pipeline(task_id: str) -> None:
 
         update_task_status(task_id, "running", "tts", 0.9)
         tts_started = time.perf_counter()
-        output_audio_path, tts_error = synthesize_audio(answer_text)
+        output_audio_path, tts_error = synthesize_self_hosted_audio(answer_text)
         trace["tts_ms"] = int((time.perf_counter() - tts_started) * 1000)
         trace["total_ms"] = int((time.perf_counter() - started) * 1000)
         mark_task_done(
