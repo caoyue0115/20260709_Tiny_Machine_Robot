@@ -71,6 +71,7 @@ def _make_board_done_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "skill_active",
         "end_skill_state",
         "turn_outcome",
+        "turn_reason",
         "question_text",
         "asr_provider",
         "error_code",
@@ -81,6 +82,14 @@ def _make_board_done_payload(payload: dict[str, Any]) -> dict[str, Any]:
 ASR_FALLBACK_NONE = "none"
 ASR_FALLBACK_CHOICES = ASR_PROVIDER_CHOICES | {ASR_FALLBACK_NONE, ""}
 IDIOM_TURN_OUTCOMES = {"meaningful", "invalid", "off_topic", "exit"}
+IDIOM_TURN_REASONS = {
+    "judge_failed",
+    "low_confidence",
+    "off_topic",
+    "repeated_word",
+    "unknown_idiom",
+    "wrong_prefix",
+}
 IDIOM_PROMPT_SEGMENTS = {
     "presence": "idiom_game/presence",
     "misheard": "idiom_game/retry",
@@ -1210,6 +1219,9 @@ async def _wait_for_skill_metadata(
     turn_outcome = str(trace.get("turn_outcome") or "").strip()
     if turn_outcome in IDIOM_TURN_OUTCOMES:
         metadata["turn_outcome"] = turn_outcome
+    turn_reason = str(trace.get("turn_reason") or "").strip()
+    if turn_reason in IDIOM_TURN_REASONS:
+        metadata["turn_reason"] = turn_reason
     return metadata
 
 

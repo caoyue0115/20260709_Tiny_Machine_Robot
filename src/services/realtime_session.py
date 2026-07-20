@@ -383,6 +383,8 @@ def run_stub_realtime_session(store: InMemoryRealtimeSessionStore, session_id: s
         )
         if skill_result.turn_outcome is not None:
             updated["trace"]["turn_outcome"] = skill_result.turn_outcome
+        if skill_result.turn_reason is not None:
+            updated["trace"]["turn_reason"] = skill_result.turn_reason
         updated["trace"]["skill_route_ms"] = 0
         updated["trace"]["retrieval_ms"] = updated["trace"]["skill_route_ms"]
         if stream_to_session_start_abs_ms is not None:

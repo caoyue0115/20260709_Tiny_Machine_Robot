@@ -56,6 +56,7 @@ class RealtimeSchemaTests(unittest.TestCase):
                 "type": "done",
                 "skill_name": "idiom_game",
                 "turn_outcome": "meaningful",
+                "turn_reason": "wrong_prefix",
             }
         )
         ordinary_done = _make_board_done_payload(
@@ -66,7 +67,37 @@ class RealtimeSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(idiom_done["turn_outcome"], "meaningful")
+        self.assertEqual(idiom_done["turn_reason"], "wrong_prefix")
         self.assertNotIn("turn_outcome", ordinary_done)
+        self.assertNotIn("turn_reason", ordinary_done)
+
+    def test_idiom_skill_metadata_exposes_validated_turn_reason(self) -> None:
+        from src.api import realtime as realtime_api
+
+        session = realtime_api.store.create_session(device_id="esp-turn-reason")
+        trace = dict(session["trace"])
+        trace.update(
+            {
+                "skill_route_complete": True,
+                "skill_name": "idiom_game",
+                "skill_active": True,
+                "end_skill_state": False,
+                "turn_outcome": "invalid",
+                "turn_reason": "wrong_prefix",
+            }
+        )
+        realtime_api.store.update_session(session["session_id"], trace=trace)
+
+        metadata = asyncio.run(
+            realtime_api._wait_for_skill_metadata(
+                session["session_id"],
+                default_skill_name="idiom_game",
+                timeout_seconds=0.1,
+            )
+        )
+
+        self.assertEqual(metadata["turn_outcome"], "invalid")
+        self.assertEqual(metadata["turn_reason"], "wrong_prefix")
 
     def test_realtime_status_response_exposes_required_fields(self) -> None:
         from src.models.realtime import RealtimeSessionStatusResponse

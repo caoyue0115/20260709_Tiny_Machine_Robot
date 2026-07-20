@@ -200,7 +200,7 @@ def test_game_cloud_client_keeps_socket_across_turns_and_matches_turn_id() -> No
     assert "cloud_client_opus_uplink_abort" not in finish_body
 
 
-def test_recoverable_game_turn_error_prompts_misheard_once_without_reconnecting() -> None:
+def test_recoverable_game_turn_error_uses_feedback_policy_without_reconnecting() -> None:
     cloud_header = (ROOT / "esp_idf_demo" / "main" / "cloud_client.h").read_text(
         encoding="utf-8"
     )
@@ -233,9 +233,8 @@ def test_recoverable_game_turn_error_prompts_misheard_once_without_reconnecting(
     assert "cloud_client_idiom_game_close" not in recoverable_branch
     assert "app_idiom_game_should_prompt_misheard(metrics.error_code)" in recoverable_branch
     assert "if (should_prompt && !rescue_active)" in recoverable_branch
-    assert 'app_play_idiom_cloud_prompt("misheard"' in recoverable_branch
-    assert "action=misheard_prompt_then_vad_rearm" in recoverable_branch
-    assert "action=nonmeaningful_prompt_suppressed" in recoverable_branch
+    assert "app_idiom_game_is_clear_human_attempt" in recoverable_branch
+    assert "app_idiom_game_play_recovery_feedback" in recoverable_branch
     assert "app_idiom_game_grant_rescue_bonus" in recoverable_branch
     assert "action=attempt_budget_preserved" in recoverable_branch
     assert "ret = ESP_OK" in recoverable_branch
@@ -269,7 +268,7 @@ def test_main_has_wake_free_idiom_game_state_machine_and_echo_guard() -> None:
     assert "ret = ESP_OK" in timeout_branch
 
 
-def test_empty_game_turn_prompts_misheard_once_then_rearms_vad() -> None:
+def test_empty_game_turn_uses_limited_feedback_then_rearms_vad() -> None:
     main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
 
     assert "#define APP_IDIOM_GAME_EMPTY_PROMPT_FLOOR_MS 1500" in main
@@ -284,10 +283,35 @@ def test_empty_game_turn_prompts_misheard_once_then_rearms_vad() -> None:
     )[0]
     assert "rescue_active" in game_loop
     assert "remaining_attempt_budget_us" in game_loop
-    assert 'app_play_idiom_cloud_prompt("misheard"' in game_loop
+    assert "app_idiom_game_play_recovery_feedback" in game_loop
     assert "APP_IDIOM_GAME_RESCUE_BONUS_MS" in main
     assert "app_idiom_game_grant_rescue_bonus" in game_loop
-    assert "action=misheard_prompt_then_vad_rearm" in game_loop
+
+
+def test_idiom_feedback_policy_recovers_for_clear_speech_without_noise_loop() -> None:
+    main = (ROOT / "esp_idf_demo" / "main" / "main.c").read_text(encoding="utf-8")
+
+    assert "#define APP_IDIOM_GAME_FULL_FEEDBACK_LIMIT 2" in main
+    assert "#define APP_IDIOM_GAME_SHORT_FEEDBACK_LIMIT 1" in main
+    assert "#define APP_IDIOM_GAME_FULL_FEEDBACK_INTERVAL_MS 4000" in main
+    assert "#define APP_IDIOM_GAME_CLEAR_SPEECH_MIN_MS 400" in main
+    clear_attempt = main.split(
+        "static bool app_idiom_game_is_clear_human_attempt", 1
+    )[1].split("static app_idiom_game_feedback_action_t", 1)[0]
+    assert "cloud_metrics->question_text[0] != '\\0'" in clear_attempt
+    assert "record_metrics->voice_started" in clear_attempt
+    assert "record_metrics->vad_stopped" in clear_attempt
+    assert "record_metrics->elapsed_ms >= APP_IDIOM_GAME_CLEAR_SPEECH_MIN_MS" in clear_attempt
+
+    choose_feedback = main.split(
+        "static app_idiom_game_feedback_action_t app_idiom_game_choose_feedback", 1
+    )[1].split("static esp_err_t app_idiom_game_play_recovery_feedback", 1)[0]
+    first_full = choose_feedback.index("feedback->full_count == 0")
+    noise_suppression = choose_feedback.index("!clear_human_attempt")
+    second_full = choose_feedback.index("APP_IDIOM_GAME_FULL_FEEDBACK_LIMIT")
+    short_ack = choose_feedback.index("APP_IDIOM_GAME_SHORT_FEEDBACK_LIMIT")
+    assert first_full < noise_suppression < second_full < short_ack
+    assert "DEMO_RECORD_RETRY_REARM_PROMPT_PATH" in main
 
 
 def test_exhausted_active_turn_does_not_play_misheard_immediately_before_exit() -> None:
@@ -304,10 +328,9 @@ def test_exhausted_active_turn_does_not_play_misheard_immediately_before_exit() 
 
     for branch in (recoverable_branch, nonmeaningful_branch):
         grant_index = branch.index("app_idiom_game_grant_rescue_bonus")
-        positive_budget_index = branch.index("if (remaining_attempt_budget_us > 0)")
-        prompt_index = branch.index('app_play_idiom_cloud_prompt("misheard"')
-        assert grant_index < positive_budget_index < prompt_index
-        assert "action=rescue_prompt_suppressed_budget_exhausted" in branch
+        positive_budget_index = branch.index("remaining_attempt_budget_us > 0")
+        feedback_index = branch.index("app_idiom_game_play_recovery_feedback")
+        assert grant_index < positive_budget_index < feedback_index
 
 
 def test_game_turn_outcome_controls_attempt_budget() -> None:
@@ -325,13 +348,30 @@ def test_game_turn_outcome_controls_attempt_budget() -> None:
         assert helper in main
         assert helper in game_loop
     assert "realtime_session.turn_outcome" in game_loop
+    assert "realtime_session.turn_reason" in game_loop
     assert "rescue_active" in game_loop
     assert "remaining_attempt_budget_us" in game_loop
-    assert "action=nonmeaningful_response_suppressed" in game_loop
+    assert "action=nonmeaningful_response_deferred" in game_loop
     assert "action=turn_outcome_compat_legacy" in game_loop
     assert "app_idiom_game_grant_rescue_bonus" in game_loop
     assert "const bool play_response = game_ended || !outcome_nonmeaningful" in game_loop
     assert "noise_hard_deadline_us" not in game_loop
+
+
+def test_game_turn_reason_is_optional_and_parsed_by_the_board() -> None:
+    cloud_header = (ROOT / "esp_idf_demo" / "main" / "cloud_client.h").read_text(
+        encoding="utf-8"
+    )
+    cloud_source = (ROOT / "esp_idf_demo" / "main" / "cloud_client.c").read_text(
+        encoding="utf-8"
+    )
+
+    assert "char turn_reason[24];" in cloud_header
+    done_handler = cloud_source.split('strcmp(type, "done") == 0', 1)[1].split(
+        'strcmp(type, "idle_exit_ack") == 0', 1
+    )[0]
+    assert 'cloud_opus_uplink_copy_optional_string(root, "turn_reason"' in done_handler
+    assert "uplink->session.turn_reason" in done_handler
 
 
 def test_attempt_budget_is_checked_before_vad_and_bounds_the_wait_window() -> None:

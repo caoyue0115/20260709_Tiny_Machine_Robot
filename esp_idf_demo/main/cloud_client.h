@@ -72,6 +72,7 @@ typedef struct {
     char turn_id[64];
     char skill_name[32];
     char turn_outcome[16];
+    char turn_reason[24];
     bool skill_active;
     bool end_skill_state;
 } cloud_realtime_session_t;

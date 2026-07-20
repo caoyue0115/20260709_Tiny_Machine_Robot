@@ -56,6 +56,7 @@ class SkillResult:
     end_skill_state: bool = False
     skill_active: bool | None = None
     turn_outcome: str | None = None
+    turn_reason: str | None = None
     trace: dict = field(default_factory=dict)
 
 
@@ -68,6 +69,21 @@ def _idiom_turn_outcome(trace: dict, *, end_skill_state: bool) -> str:
     if event == "off_topic":
         return "off_topic"
     return "invalid"
+
+
+_IDIOM_RETRY_TURN_REASONS = {
+    "judge_failed",
+    "low_confidence",
+    "off_topic",
+    "repeated_word",
+    "unknown_idiom",
+    "wrong_prefix",
+}
+
+
+def _idiom_turn_reason(trace: dict) -> str | None:
+    reason = str(trace.get("idiom_result") or "").strip()
+    return reason if reason in _IDIOM_RETRY_TURN_REASONS else None
 
 
 def _parse_enabled_skills(raw: str | Iterable[str] | None) -> set[str]:
@@ -210,6 +226,11 @@ class SkillRouter:
             skill_active=not end_skill_state,
             turn_outcome=(
                 _idiom_turn_outcome(trace, end_skill_state=end_skill_state)
+                if skill_name == "idiom_game"
+                else None
+            ),
+            turn_reason=(
+                _idiom_turn_reason(trace)
                 if skill_name == "idiom_game"
                 else None
             ),

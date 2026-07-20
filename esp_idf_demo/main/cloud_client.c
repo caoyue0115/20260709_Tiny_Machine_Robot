@@ -1585,6 +1585,9 @@ static void cloud_opus_uplink_handle_json(cloud_opus_uplink_t *uplink, const cha
         cloud_opus_uplink_copy_optional_string(root, "turn_outcome",
                                                uplink->session.turn_outcome,
                                                sizeof(uplink->session.turn_outcome));
+        cloud_opus_uplink_copy_optional_string(root, "turn_reason",
+                                               uplink->session.turn_reason,
+                                               sizeof(uplink->session.turn_reason));
         uplink->session.skill_active = cloud_json_get_bool_default(root, "skill_active", false);
         uplink->session.end_skill_state =
             cloud_json_get_bool_default(root, "end_skill_state", false);

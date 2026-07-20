@@ -277,9 +277,24 @@ class VoiceSkillRouterTests(unittest.TestCase):
         assert result is not None
         self.assertIn("刚刚用过啦", result.answer_text or "")
         self.assertEqual(result.turn_outcome, "invalid")
+        self.assertEqual(result.turn_reason, "repeated_word")
         self.assertEqual(
             result.audio_plan,
             ["idiom_game/repeated_prefix", "idiom_game/repeated_suffix"],
+        )
+
+    def test_wrong_prefix_exports_specific_retry_reason(self) -> None:
+        router, _store = self._build_small_router()
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="海阔天空", answer_mode="short", trace={})
+
+        assert result is not None
+        self.assertEqual(result.turn_outcome, "invalid")
+        self.assertEqual(result.turn_reason, "wrong_prefix")
+        self.assertEqual(
+            result.audio_plan,
+            ["idiom_game/need_prefix", "pinyin/jing", "idiom_game/need_suffix"],
         )
 
     def test_repeat_phrases_return_last_robot_word_without_advancing_state(self) -> None:
@@ -463,6 +478,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
                 assert result is not None
                 self.assertEqual(result.audio_plan, ["idiom_game/not_found"])
                 self.assertEqual(result.turn_outcome, "invalid")
+                self.assertEqual(result.turn_reason, "unknown_idiom")
         self.assertEqual(calls, [])
 
     def test_llm_off_topic_exports_off_topic_turn_outcome(self) -> None:
@@ -485,6 +501,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
 
         assert result is not None
         self.assertEqual(result.turn_outcome, "off_topic")
+        self.assertEqual(result.turn_reason, "off_topic")
 
     def test_llm_failure_uses_static_retry_without_advancing_state(self) -> None:
         router, store = self._build_small_router(
@@ -500,6 +517,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.answer_text, "我没听清，请再说一次。")
         self.assertEqual(result.audio_plan, ["idiom_game/retry"])
+        self.assertEqual(result.turn_reason, "judge_failed")
         after = store.get("esp-1")
         assert after is not None
         self.assertEqual((after.expected_py, after.used_words, after.valid_user_turns), snapshot)
@@ -663,6 +681,8 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
                         skill_name="idiom_game",
                         answer_text="海阔天空",
                         audio_plan=["idioms/海阔天空"],
+                        turn_outcome="invalid",
+                        turn_reason="unknown_idiom",
                         trace={"skill_name": "idiom_game"},
                     ),
                 ), mock.patch.object(
@@ -677,6 +697,8 @@ class RealtimeSkillIntegrationTests(unittest.TestCase):
 
         updated = store.get_session(session["session_id"])
         self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["trace"]["turn_outcome"], "invalid")
+        self.assertEqual(updated["trace"]["turn_reason"], "unknown_idiom")
         self.assertEqual(updated["trace"]["static_audio_used"], True)
         self.assertEqual(
             b"".join(store.consume_audio_stream(session["session_id"], idle_timeout_ms=0)),
