@@ -1,0 +1,24 @@
+{
+  "generated_on": "2026-07-20",
+  "total_idioms": 29493,
+  "tier_counts": {
+    "A": 3380,
+    "B": 1709,
+    "C": 24404
+  },
+  "robot_pool_size": 5089,
+  "robot_start_pinyin_count": 356,
+  "user_endings_with_robot_reply": 29193,
+  "user_ending_reply_coverage": 0.9898,
+  "education_matches": 0,
+  "school_common_matches": 679,
+  "modern_common_matches": 4397,
+  "bcc_matches": {
+    "multi": 5062,
+    "news": 6828,
+    "literature": 5916,
+    "dialogue": 2822
+  },
+  "subtlex_matches": 3219,
+  "manual_overrides": 26
+}

@@ -1,0 +1,47 @@
+{
+  "generated_on": "2026-07-20",
+  "sources": {
+    "education": "https://nclds.xmu.edu.cn/ywjy",
+    "school_common": "https://www.plecoforums.com/threads/%E5%B0%8F%E5%AD%A6%E7%94%9F%E5%B8%B8%E7%94%A8%E6%88%90%E8%AF%AD%E5%A4%A7%E5%85%A8-a-huge-list-of-cheng-yu-flashcards.5366/",
+    "standardized_variants": "https://www.moe.gov.cn/jyb_sjzl/ziliao/A19/201001/t20100115_75687.html",
+    "modern_common_official": "https://www.moe.gov.cn/ewebeditor/uploadfile/2015/01/13/20150113085920115.pdf",
+    "modern_common_transcription": "https://gist.githubusercontent.com/zenwalk/02df86ef16f555f8f6800564d98208ca/raw/",
+    "bcc": {
+      "multi": "https://bcc.blcu.edu.cn/api/datasets/multi_domain_total_word_freq.txt/download",
+      "news": "https://bcc.blcu.edu.cn/api/datasets/news_total_word_freq.txt/download",
+      "literature": "https://bcc.blcu.edu.cn/api/datasets/literature_word_freq.txt/download",
+      "dialogue": "https://bcc.blcu.edu.cn/api/datasets/dialogue_word_freq.txt/download"
+    },
+    "subtlex": "https://www.ugent.be/plone_portal/pp/experimentele-psychologie/en/research/documents/subtlexch/subtlexchwf.zip"
+  },
+  "files": {
+    "modern_common_transcription": {
+      "sha256": "8e16b3e1c40593bfa81e18f285ecc830a349629877d45bdd033c2dd5b77783cb",
+      "size_bytes": 1422975
+    },
+    "school_common": {
+      "sha256": "4b2bb76508d4cd1147a0a1fe112dee56dc2fe52735ddf0de24dd637bee610b70",
+      "size_bytes": 18094
+    },
+    "bcc_multi": {
+      "sha256": "0f5aa8229d19c16d29ad5d153c551eb3b325e4e0f6620e4e02eb7888f610a539",
+      "size_bytes": 5542891
+    },
+    "bcc_news": {
+      "sha256": "ca713552627db53130c18e9d8a4a7feacc6e46fbc2e69c9f2ca7c04fd9492637",
+      "size_bytes": 11510206
+    },
+    "bcc_literature": {
+      "sha256": "74d8373a28a2774f5592f9b0f320da9e27fdc700727b7fb4141ba20c19a5a613",
+      "size_bytes": 1989087
+    },
+    "bcc_dialogue": {
+      "sha256": "3d9d56bef688c9fa7f7aba60929d1fd11e52e0416b1cdec2a0d1403e6eb874ed",
+      "size_bytes": 1507322
+    },
+    "subtlex": {
+      "sha256": "086536450b1f77d0c7ff3ac0fc8375897162ace807d3167bec48b4c493434077",
+      "size_bytes": 3230773
+    }
+  }
+}

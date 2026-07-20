@@ -63,7 +63,7 @@ def _idiom_turn_outcome(trace: dict, *, end_skill_state: bool) -> str:
     if end_skill_state:
         return "exit"
     event = str(trace.get("idiom_event") or "")
-    if event in {"start", "robot_reply", "repeat", "difficulty_switch"}:
+    if event in {"start", "robot_reply", "repeat", "legacy_difficulty_ignored"}:
         return "meaningful"
     if event == "off_topic":
         return "off_topic"
@@ -244,8 +244,6 @@ def get_default_skill_router() -> SkillRouter:
                     _judge_unknown_idiom_with_llm if settings.idiom_game_llm_judge_enabled else None
                 ),
                 judge_min_confidence=settings.idiom_game_llm_judge_min_confidence,
-                robot_difficulty=settings.idiom_game_robot_difficulty,
-                target_user_turns=settings.idiom_game_target_user_turns,
                 playable_words=catalog.playable_words if catalog is not None else None,
             ),
             enabled_skills=settings.enabled_skills,
