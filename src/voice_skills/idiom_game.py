@@ -211,7 +211,7 @@ class IdiomGameState:
     expected_py: str
     used_words: set[str] = field(default_factory=set)
     valid_user_turns: int = 0
-    robot_difficulty: str = "full"
+    robot_difficulty: str = "easy"
     last_robot_word: str = ""
     updated_at: float = field(default_factory=time.time)
 
@@ -237,7 +237,7 @@ def clean_idiom_text(text: str) -> str:
 
 def normalize_robot_difficulty(value: str) -> str:
     difficulty = str(value or "").strip().lower()
-    return difficulty if difficulty in _ROBOT_REPLY_LIMITS else "normal"
+    return difficulty if difficulty in _ROBOT_REPLY_LIMITS else "easy"
 
 
 def robot_difficulty_label(value: str) -> str:
@@ -378,7 +378,7 @@ class IdiomGameSkill:
         opening_words: Iterable[str] | None = None,
         judge_unknown_idiom: JudgeUnknownIdiom | None = None,
         judge_min_confidence: float = 0.8,
-        robot_difficulty: str = "full",
+        robot_difficulty: str = "easy",
         robot_reply_limit: int | None = None,
         target_user_turns: int = 0,
         playable_words: Iterable[str] | None = None,
@@ -396,6 +396,7 @@ class IdiomGameSkill:
         playable_idioms = [entry for entry in self._idioms if entry.word in self._playable_words]
         if not playable_idioms:
             raise ValueError("idiom_game_requires_playable_idioms")
+        self._full_bot_by_first_py = self._build_reply_index(playable_idioms)
         self._bot_by_first_py_by_difficulty: dict[str, dict[str, list[IdiomEntry]]] = {}
         for difficulty in _ROBOT_REPLY_LIMITS:
             self._bot_by_first_py_by_difficulty[difficulty] = self._build_reply_index(
@@ -650,20 +651,27 @@ class IdiomGameSkill:
         return best[2] if best is not None else None
 
     def _find_reply(self, first_py: str, used_words: set[str], difficulty: str) -> IdiomEntry | None:
+        normalized_difficulty = normalize_robot_difficulty(difficulty)
         reply_index = self._bot_by_first_py_by_difficulty.get(
-            normalize_robot_difficulty(difficulty),
+            normalized_difficulty,
             self._bot_by_first_py_by_difficulty[self._default_robot_difficulty],
         )
         for entry in reply_index.get(first_py, []):
             if entry.word not in used_words:
+                self._last_trace["idiom_robot_reply_pool"] = "difficulty"
                 return entry
+        for entry in self._full_bot_by_first_py.get(first_py, []):
+            if entry.word not in used_words:
+                self._last_trace["idiom_robot_reply_pool"] = "full_fallback"
+                return entry
+        self._last_trace["idiom_robot_reply_pool"] = "none"
         return None
 
     def _select_robot_reply_pool(self, difficulty: str, reply_limit: int | None) -> list[IdiomEntry]:
         playable = [entry for entry in self._idioms if entry.word in self._playable_words]
         if reply_limit is None:
             normalized_difficulty = normalize_robot_difficulty(difficulty)
-            reply_limit = _ROBOT_REPLY_LIMITS.get(normalized_difficulty, _ROBOT_REPLY_LIMITS["normal"])
+            reply_limit = _ROBOT_REPLY_LIMITS.get(normalized_difficulty, _ROBOT_REPLY_LIMITS["easy"])
         if reply_limit is None:
             return playable
         return playable[: max(0, int(reply_limit))]

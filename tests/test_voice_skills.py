@@ -74,6 +74,13 @@ class VoiceSkillRouterTests(unittest.TestCase):
         )
         self.assertEqual(result.turn_outcome, "meaningful")
 
+    def test_default_idiom_difficulty_is_easy(self) -> None:
+        from src.settings import Settings
+        from src.voice_skills.idiom_game import normalize_robot_difficulty
+
+        self.assertEqual(Settings(_env_file=None).idiom_game_robot_difficulty, "easy")
+        self.assertEqual(normalize_robot_difficulty(""), "easy")
+
     def test_start_reply_and_audio_plan_stop_after_opening_idiom(self) -> None:
         router, store = self._build_small_router()
 
@@ -115,6 +122,7 @@ class VoiceSkillRouterTests(unittest.TestCase):
             result.audio_plan,
             ["idiom_game/start", "idioms/画龙点睛"],
         )
+        self.assertEqual(result.trace["idiom_target_user_turns"], 8)
         state = store.get("esp-1")
         assert state is not None
         self.assertEqual(state.robot_difficulty, "easy")
@@ -199,6 +207,33 @@ class VoiceSkillRouterTests(unittest.TestCase):
         assert result is not None
         self.assertIn("小机仔暂时接不上啦", result.answer_text or "")
         self.assertEqual(result.audio_plan, ["idiom_game/robot_no_reply_user_win"])
+
+    def test_limited_difficulty_pool_falls_back_to_full_playable_lexicon(self) -> None:
+        from src.voice_skills.idiom_game import IdiomGameSkill, InMemoryIdiomGameStore, load_default_idioms
+        from src.voice_skills.router import SkillRouter
+
+        store = InMemoryIdiomGameStore()
+        router = SkillRouter(
+            idiom_skill=IdiomGameSkill(
+                load_default_idioms(),
+                store=store,
+                opening_words=["画龙点睛"],
+                robot_difficulty="easy",
+            ),
+            enabled_skills="idiom_game",
+        )
+        router.route(device_id="esp-1", text="开始成语接龙", answer_mode="short", trace={})
+
+        result = router.route(device_id="esp-1", text="泾渭不分", answer_mode="short", trace={})
+
+        assert result is not None
+        self.assertEqual(result.answer_text, "分崩离析")
+        self.assertEqual(result.audio_plan, ["idioms/分崩离析"])
+        self.assertEqual(result.trace["idiom_robot_reply_pool"], "full_fallback")
+        self.assertFalse(result.end_skill_state)
+        state = store.get("esp-1")
+        assert state is not None
+        self.assertEqual(state.valid_user_turns, 1)
 
     def test_repeated_idiom_explanation_does_not_require_idiom_audio(self) -> None:
         router, _store = self._build_small_router()
